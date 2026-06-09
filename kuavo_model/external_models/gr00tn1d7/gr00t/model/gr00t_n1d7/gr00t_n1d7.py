@@ -25,6 +25,7 @@ from transformers.feature_extraction_utils import BatchFeature
 import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
+from gr00t.model.lora import freeze_non_lora_parameters, inject_lora_adapter
 from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
@@ -534,6 +535,47 @@ class Gr00tN1d7(PreTrainedModel):
             model_name=config.model_name,
             model_type=config.backbone_model_type,
             transformers_loading_kwargs=transformers_loading_kwargs,
+        )
+        self._maybe_setup_lora()
+
+    def _maybe_setup_lora(self):
+        """Inject LoRA adapters for VLM/action expert training when enabled.
+
+        This keeps the base GR00T weights frozen and leaves only adapter weights
+        trainable, so enabling LoRA does not accidentally fall back to full
+        finetuning of the backbone, projector, or action expert.
+        """
+        if not self.config.use_lora:
+            return
+
+        if self.config.lora_vlm:
+            self.backbone.model = inject_lora_adapter(
+                module=self.backbone.model,
+                target_modules=self.config.lora_vlm_target_modules,
+                rank=self.config.lora_rank,
+                alpha=self.config.lora_alpha,
+                dropout=self.config.lora_dropout,
+                adapter_name="vlm",
+            )
+
+        if self.config.lora_action_expert:
+            self.action_head.model = inject_lora_adapter(
+                module=self.action_head.model,
+                target_modules=self.config.lora_action_expert_target_modules,
+                rank=self.config.lora_rank,
+                alpha=self.config.lora_alpha,
+                dropout=self.config.lora_dropout,
+                adapter_name="action_expert",
+            )
+
+        freeze_non_lora_parameters(self)
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        logger.info(
+            "LoRA-only training enabled: trainable parameters: %s / %s (%.2f%%)",
+            f"{trainable_params:,}",
+            f"{total_params:,}",
+            100 * trainable_params / total_params,
         )
 
     def prepare_input(self, inputs: dict) -> Tuple[BatchFeature, BatchFeature]:

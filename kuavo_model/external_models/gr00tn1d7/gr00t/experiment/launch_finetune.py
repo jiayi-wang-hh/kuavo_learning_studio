@@ -77,6 +77,12 @@ if __name__ == "__main__":
     config.model.tune_visual = ft_config.tune_visual
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
+    config.model.use_lora = ft_config.use_lora
+    config.model.lora_vlm = ft_config.lora_vlm
+    config.model.lora_action_expert = ft_config.lora_action_expert
+    config.model.lora_rank = ft_config.lora_rank
+    config.model.lora_alpha = ft_config.lora_alpha
+    config.model.lora_dropout = ft_config.lora_dropout
     config.model.state_dropout_prob = ft_config.state_dropout_prob
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params

@@ -22,6 +22,7 @@ from gr00t.data.collator import BasicDataCollator
 from gr00t.data.dataset.factory import DatasetFactory
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.experiment.dist_utils import get_rank
+from gr00t.model.lora import freeze_non_lora_parameters
 import numpy as np
 import torch
 from transformers import PreTrainedModel
@@ -90,6 +91,8 @@ class BasicPipeline(ModelPipeline):
         # unfreeze the model first
         for name, param in model.named_parameters():
             param.requires_grad = True
+        if getattr(self.config.model, "use_lora", False):
+            freeze_non_lora_parameters(model)
 
         # Print parameter statistics
         total_params = sum(p.numel() for p in model.parameters())

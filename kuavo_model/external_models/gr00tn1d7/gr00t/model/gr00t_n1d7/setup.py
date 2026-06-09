@@ -86,6 +86,16 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
                 tune_vlln=self.config.model.tune_vlln,
+                use_lora=self.config.model.use_lora,
+                lora_vlm=self.config.model.lora_vlm,
+                lora_action_expert=self.config.model.lora_action_expert,
+                lora_rank=self.config.model.lora_rank,
+                lora_alpha=self.config.model.lora_alpha,
+                lora_dropout=self.config.model.lora_dropout,
+                lora_vlm_target_modules=self.config.model.lora_vlm_target_modules,
+                lora_action_expert_target_modules=(
+                    self.config.model.lora_action_expert_target_modules
+                ),
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
                 load_bf16=self.config.model.load_bf16,

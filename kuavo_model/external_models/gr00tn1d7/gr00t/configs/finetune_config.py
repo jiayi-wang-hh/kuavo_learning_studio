@@ -57,6 +57,24 @@ class FinetuneConfig:
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
+    use_lora: bool = False
+    """If True, inject LoRA adapters and train only LoRA parameters."""
+
+    lora_vlm: bool = True
+    """If True with use_lora, inject LoRA adapters into the VLM backbone."""
+
+    lora_action_expert: bool = True
+    """If True with use_lora, inject LoRA adapters into the DiT action expert."""
+
+    lora_rank: int = 16
+    """LoRA rank used for VLM and action expert adapters."""
+
+    lora_alpha: int = 32
+    """LoRA alpha scaling used for VLM and action expert adapters."""
+
+    lora_dropout: float = 0.05
+    """Dropout probability used inside LoRA adapters."""
+
     state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.
