@@ -315,6 +315,11 @@ def main(args: ArgsConfig):
             model_path=local_model_path,
             device="cuda" if torch.cuda.is_available() else "cpu",
         )
+        policy.model.action_head.num_inference_timesteps = args.denoising_steps
+        logging.info(
+            "Using denoising steps: "
+            f"{policy.model.action_head.num_inference_timesteps}"
+        )
     else:
         policy = PolicyClient(host=args.host, port=args.port)
 
