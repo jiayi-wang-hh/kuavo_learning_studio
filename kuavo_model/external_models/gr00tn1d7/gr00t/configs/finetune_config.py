@@ -63,6 +63,9 @@ class FinetuneConfig:
     lora_vlm: bool = True
     """If True with use_lora, inject LoRA adapters into the VLM backbone."""
 
+    lora_vision: bool = False
+    """If True with use_lora, inject LoRA adapters into vision-tower attention layers."""
+
     lora_action_expert: bool = True
     """If True with use_lora, inject LoRA adapters into the DiT action expert."""
 

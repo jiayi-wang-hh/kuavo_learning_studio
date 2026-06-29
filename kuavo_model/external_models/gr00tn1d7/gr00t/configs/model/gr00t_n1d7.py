@@ -46,6 +46,7 @@ class Gr00tN1d7Config(PretrainedConfig):
     tune_visual: bool = False
     use_lora: bool = False
     lora_vlm: bool = True
+    lora_vision: bool = False
     lora_action_expert: bool = True
     lora_rank: int = 16
     lora_alpha: int = 32
@@ -58,6 +59,12 @@ class Gr00tN1d7Config(PretrainedConfig):
         "gate_proj",
         "up_proj",
         "down_proj",
+    )
+    # These names are scoped to each visual block's attention module during
+    # injection, so "proj" cannot match patch_embed.proj or visual mergers.
+    lora_vision_target_modules: tuple[str, ...] = (
+        "qkv",
+        "proj",
     )
     lora_action_expert_target_modules: tuple[str, ...] = (
         "to_q",

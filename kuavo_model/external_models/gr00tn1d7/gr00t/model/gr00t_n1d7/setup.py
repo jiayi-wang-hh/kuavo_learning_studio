@@ -94,11 +94,13 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 # unexpected keys even though the checkpoint itself is valid.
                 use_lora=False if load_with_lora else self.config.model.use_lora,
                 lora_vlm=self.config.model.lora_vlm,
+                lora_vision=self.config.model.lora_vision,
                 lora_action_expert=self.config.model.lora_action_expert,
                 lora_rank=self.config.model.lora_rank,
                 lora_alpha=self.config.model.lora_alpha,
                 lora_dropout=self.config.model.lora_dropout,
                 lora_vlm_target_modules=self.config.model.lora_vlm_target_modules,
+                lora_vision_target_modules=self.config.model.lora_vision_target_modules,
                 lora_action_expert_target_modules=(
                     self.config.model.lora_action_expert_target_modules
                 ),
@@ -138,11 +140,15 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             if load_with_lora:
                 model.config.use_lora = self.config.model.use_lora
                 model.config.lora_vlm = self.config.model.lora_vlm
+                model.config.lora_vision = self.config.model.lora_vision
                 model.config.lora_action_expert = self.config.model.lora_action_expert
                 model.config.lora_rank = self.config.model.lora_rank
                 model.config.lora_alpha = self.config.model.lora_alpha
                 model.config.lora_dropout = self.config.model.lora_dropout
                 model.config.lora_vlm_target_modules = self.config.model.lora_vlm_target_modules
+                model.config.lora_vision_target_modules = (
+                    self.config.model.lora_vision_target_modules
+                )
                 model.config.lora_action_expert_target_modules = (
                     self.config.model.lora_action_expert_target_modules
                 )

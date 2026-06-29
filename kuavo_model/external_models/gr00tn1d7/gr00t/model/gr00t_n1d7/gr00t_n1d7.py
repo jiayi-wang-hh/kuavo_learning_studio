@@ -558,6 +558,24 @@ class Gr00tN1d7(PreTrainedModel):
                 adapter_name="vlm",
             )
 
+        if self.config.lora_vision:
+            visual_blocks = self.backbone.model.visual.blocks
+            if not visual_blocks:
+                raise ValueError("Cannot inject vision LoRA: the vision tower has no blocks")
+            for block in visual_blocks:
+                block.attn = inject_lora_adapter(
+                    module=block.attn,
+                    target_modules=self.config.lora_vision_target_modules,
+                    rank=self.config.lora_rank,
+                    alpha=self.config.lora_alpha,
+                    dropout=self.config.lora_dropout,
+                    adapter_name="vision",
+                )
+            logger.info(
+                "Injected vision LoRA into qkv/proj attention layers of %s visual blocks",
+                len(visual_blocks),
+            )
+
         if self.config.lora_action_expert:
             self.action_head.model = inject_lora_adapter(
                 module=self.action_head.model,

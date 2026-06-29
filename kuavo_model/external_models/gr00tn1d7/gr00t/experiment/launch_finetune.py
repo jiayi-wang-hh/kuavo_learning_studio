@@ -79,6 +79,7 @@ if __name__ == "__main__":
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
     config.model.use_lora = ft_config.use_lora
     config.model.lora_vlm = ft_config.lora_vlm
+    config.model.lora_vision = ft_config.lora_vision
     config.model.lora_action_expert = ft_config.lora_action_expert
     config.model.lora_rank = ft_config.lora_rank
     config.model.lora_alpha = ft_config.lora_alpha
