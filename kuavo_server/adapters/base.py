@@ -46,6 +46,7 @@ def kuavo_repo_root() -> Path:
 
 DEFAULT_MODEL_REPOS: dict[str, Path] = {
     "openpi": kuavo_repo_root() / "kuavo_model" / "external_models" / "openpi",
+    "isaac_gr00t_n15": kuavo_repo_root() / "kuavo_model" / "external_models" / "gr00tn1d5" / "source",
     "isaac_gr00t_n17": kuavo_repo_root() / "kuavo_model" / "external_models" / "gr00tn1d7",
     "lingbot_vla": kuavo_repo_root() / "kuavo_model" / "external_models" / "lingbot-vla",
 }

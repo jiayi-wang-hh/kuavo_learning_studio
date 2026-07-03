@@ -9,6 +9,7 @@ ADAPTER_MODULES: dict[str, str] = {
     "openpi": "kuavo_server.adapters.openpi",
     "wall_x": "kuavo_server.adapters.wall_x",
     "isaac_gr00t": "kuavo_server.adapters.isaac_gr00t",
+    "isaac_gr00t_n15": "kuavo_server.adapters.isaac_gr00t_n15",
     "isaac_gr00t_n17": "kuavo_server.adapters.isaac_gr00t_n17",
 }
 

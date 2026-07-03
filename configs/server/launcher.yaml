@@ -25,6 +25,23 @@ common:
 adapters:
 
   # ============================================================
+  # NVIDIA Isaac GR00T N1.5 (native upstream runtime)
+  # ============================================================
+  groot_n15:
+    adapter: isaac_gr00t_n15
+    env:
+      mode: uv
+      project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d5/source
+    args:
+      checkpoint: nvidia/GR00T-N1.5-3B
+      data_config: kuavo
+      embodiment_tag: new_embodiment
+      which_arm: both
+      execution_horizon: 16
+      denoising_steps: 4
+      model_repo_root: ""
+
+  # ============================================================
   # OpenPI
   # ============================================================
   openpi:
