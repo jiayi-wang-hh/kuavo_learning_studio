@@ -36,11 +36,40 @@ class LearningStudioLoraConfig(FinetuneConfig):
     lora_action_head_only: bool = False
     lora_include_mlp: bool = False
     lora_modules_to_save_action_head: bool = False
+    logging_steps: int = 10
+    """Write Trainer metrics (including loss and learning rate) every N steps."""
+
+    log_file: str = "train.log"
+    """Log filename created inside the resolved training output directory."""
 
 
 _RUNTIME: dict[str, Any] = {}
 _ORIGINAL_CREATE_MODEL = Gr00tN1d7Pipeline._create_model
 _ORIGINAL_SAVE_MODEL = Gr00tTrainer.save_model
+
+
+class TeeStream:
+    """Mirror a console stream to a persistent UTF-8 training log."""
+
+    def __init__(self, console, log):
+        self.console = console
+        self.log = log
+
+    def write(self, value):
+        self.console.write(value)
+        self.log.write(value)
+        self.log.flush()
+        return len(value)
+
+    def flush(self):
+        self.console.flush()
+        self.log.flush()
+
+    def isatty(self):
+        return self.console.isatty()
+
+    def fileno(self):
+        return self.console.fileno()
 
 
 def discover_lora_targets(
@@ -218,6 +247,7 @@ def build_training_config(ft: LearningStudioLoraConfig):
     ):
         setattr(config.training, name, getattr(ft, name))
     config.training.gradient_checkpointing = True
+    config.training.logging_steps = ft.logging_steps
     for name in ("shard_size", "episode_sampling_rate", "num_shards_per_epoch"):
         setattr(config.data, name, getattr(ft, name))
     return config
@@ -235,7 +265,27 @@ def main() -> None:
         modules_to_save_action_head=ft.lora_modules_to_save_action_head,
     )
     install_lora_hooks()
-    run(build_training_config(ft))
+    config = build_training_config(ft)
+    output_dir = Path(config.training.output_dir)
+    if config.training.experiment_name:
+        output_dir /= config.training.experiment_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / ft.log_file
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    with log_path.open("a", encoding="utf-8", buffering=1) as log:
+        sys.stdout = TeeStream(original_stdout, log)
+        sys.stderr = TeeStream(original_stderr, log)
+        try:
+            print(f"[learningstudio-lora] training log: {log_path.resolve()}")
+            if config.training.use_wandb:
+                print(
+                    "[learningstudio-lora] W&B enabled: "
+                    f"project={config.training.wandb_project}, "
+                    f"logging_steps={config.training.logging_steps}"
+                )
+            run(config)
+        finally:
+            sys.stdout, sys.stderr = original_stdout, original_stderr
 
 
 if __name__ == "__main__":

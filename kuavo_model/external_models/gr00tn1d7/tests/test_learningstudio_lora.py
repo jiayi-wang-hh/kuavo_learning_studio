@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 
 import torch
+from io import StringIO
 
 SCRIPT = Path(__file__).parents[1] / "launch_finetune_lora.py"
 SPEC = importlib.util.spec_from_file_location("learningstudio_lora", SCRIPT)
@@ -39,3 +40,11 @@ def test_injection_only_trains_lora_weights():
     trainable = [name for name, param in model.named_parameters() if param.requires_grad]
     assert trainable
     assert all("lora_" in name for name in trainable)
+
+
+def test_tee_stream_mirrors_console_output():
+    console, log = StringIO(), StringIO()
+    tee = MODULE.TeeStream(console, log)
+    tee.write("loss=1.23\n")
+    assert console.getvalue() == "loss=1.23\n"
+    assert log.getvalue() == console.getvalue()

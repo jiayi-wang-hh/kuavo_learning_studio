@@ -23,6 +23,16 @@ Use `--lora-action-head-only` to restrict adapters to the action head, or
 `--lora-modules-to-save-action-head` to persist the non-LoRA action projection
 modules alongside the adapter. Set `--lora-rank 0` to disable the hook.
 
+Training output is mirrored to `<output-dir>/train.log`. To upload loss and
+learning-rate curves to Weights & Biases, log in once with `uv run wandb login`
+and add:
+
+```bash
+--use-wandb \
+--wandb-project kuavo-gr00t-n17-lora \
+--logging-steps 10
+```
+
 <div align="center">
 
   <img src="media/header_compress.png" width="800" alt="NVIDIA Isaac GR00T N1.7 Header">
