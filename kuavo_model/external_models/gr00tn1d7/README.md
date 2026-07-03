@@ -1,3 +1,26 @@
+## Learning Studio hook-injected LoRA
+
+The `launch_finetune_lora.py` entry point adapts the PEFT hook method from
+[`jinnymo/gr00t-n17-lora`](https://github.com/jinnymo/gr00t-n17-lora). It loads
+the N1.7 base weights before wrapping the complete model with
+`get_peft_model`, and writes `adapter_only/` inside every checkpoint.
+
+Run it from the Learning Studio repository root:
+
+```bash
+python kuavo_model/external_models/gr00tn1d7/launch_finetune_lora.py \
+  --dataset-path /path/to/lerobot_v2_dataset \
+  --base-model-path nvidia/GR00T-N1.7-3B \
+  --embodiment-tag NEW_EMBODIMENT \
+  --modality-config-path /path/to/kuavo_config.py \
+  --output-dir outputs/train/gr00t_n17_lora \
+  --lora-rank 32 --lora-alpha 64 --lora-include-mlp
+```
+
+Use `--lora-action-head-only` to restrict adapters to the action head, or
+`--lora-modules-to-save-action-head` to persist the non-LoRA action projection
+modules alongside the adapter. Set `--lora-rank 0` to disable the hook.
+
 <div align="center">
 
   <img src="media/header_compress.png" width="800" alt="NVIDIA Isaac GR00T N1.7 Header">
