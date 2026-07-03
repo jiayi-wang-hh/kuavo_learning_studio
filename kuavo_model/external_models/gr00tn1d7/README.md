@@ -5,10 +5,12 @@ The `launch_finetune_lora.py` entry point adapts the PEFT hook method from
 the N1.7 base weights before wrapping the complete model with
 `get_peft_model`, and writes `adapter_only/` inside every checkpoint.
 
-Run it from the Learning Studio repository root:
+Run it in the GR00T N1.7 uv sub-environment:
 
 ```bash
-python kuavo_model/external_models/gr00tn1d7/launch_finetune_lora.py \
+cd kuavo_model/external_models/gr00tn1d7
+uv sync --python 3.10
+uv run python launch_finetune_lora.py \
   --dataset-path /path/to/lerobot_v2_dataset \
   --base-model-path nvidia/GR00T-N1.7-3B \
   --embodiment-tag NEW_EMBODIMENT \
