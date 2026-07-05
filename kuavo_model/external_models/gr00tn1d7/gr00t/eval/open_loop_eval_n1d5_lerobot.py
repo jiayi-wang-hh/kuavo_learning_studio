@@ -86,8 +86,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--video-backend",
-        default=None,
-        help="Optional LeRobot video backend override, for example decord.",
+        default="decord",
+        help="LeRobot video backend (default: decord, avoiding torchcodec ABI issues).",
     )
     return parser.parse_args()
 
@@ -193,8 +193,7 @@ def main() -> int:
         "root": args.dataset_root,
         "episodes": args.episodes,
     }
-    if args.video_backend is not None:
-        dataset_kwargs["video_backend"] = args.video_backend
+    dataset_kwargs["video_backend"] = args.video_backend
     dataset = LeRobotDataset(**dataset_kwargs)
     LOGGER.info("Loaded %d frames from episodes %s", len(dataset), args.episodes)
 
