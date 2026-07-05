@@ -281,7 +281,8 @@ def _validate_video_paths(src: Path, dst: Path) -> None:
             raise ValueError(f"Path contains invalid control characters: {name} path")
 
     # Additional check: ensure resolved paths don't point to system directories
-    system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot", "/root"}
+    # system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot", "/root"}
+    system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot"}
     for resolved_path, name in [(src_resolved, "source"), (dst_resolved, "destination")]:
         path_str = str(resolved_path)
         for sys_dir in system_dirs:

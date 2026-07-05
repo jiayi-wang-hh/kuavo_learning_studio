@@ -3,17 +3,17 @@
 
 dataset:  # 数据集相关设置。
   repo_id: "lerobot/your_dataset"  # 数据集名字，用来做标识。
-  root: null  # 本地数据路径。
+  root: /root/bayes-tmp/kuavo_icra_dataset/icra_task1_lerobot/lerobot  # 本地数据路径。
 
 training:  # 训练流程设置。
   resume: false  # 是否从 output_dir 最新 checkpoint 继续训；续训改为 true，并修改 output_dir 为上阶段 run 的产物路径，如 outputs/train/gr00t_YYYYMMDD_HHMMSS。
   output_dir: "outputs/train/gr00t"  # 训练输出目录。
   job_name: "gr00t"  # 实验名。
   batch_size: 8  # 每张卡上的 batch size。
-  steps: 10000  # 总训练步数。
-  save_freq: 1000  # 每隔多少步存一次权重。
-  log_freq: 100  # 每隔多少步打一次日志。
-  eval_freq: 1000  # 每隔多少步做一次评测。
+  steps: 50000  # 总训练步数。
+  save_freq: 5000  # 每隔多少步存一次权重。
+  log_freq: 500  # 每隔多少步打一次日志。
+  eval_freq: 5000  # 每隔多少步做一次评测。
   num_workers: 4  # 读数据用的进程数。
   seed: 1000  # 随机种子。
 

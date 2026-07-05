@@ -14,8 +14,8 @@ hydra:  # Hydra 配置文件保存目录，仅供参数检查使用
 
 rosbag:
   mode: normal  # 可选: normal, resume, merge
-  rosbag_dir: /path/to/rosbags # rosbag文件存放的目录。normal / resume 模式需要
-  target_dir: /path/to/target_dir  # 输出父目录；最终数据集会生成在 target_dir/lerobot
+  rosbag_dir: /root/bayes-tmp/kuavo_dataset/icra_task1_10 # rosbag文件存放的目录。normal / resume 模式需要
+  target_dir: /root/bayes-tmp/kuavo_dataset/icra_task1_lerobot_jiayi_10  # 输出父目录；最终数据集会生成在 target_dir/lerobot
   lerobot_dir_resume: /path/to/lerobot_resume  # resume 模式下，已有 lerobot 数据集的目录
   lerobot_dir_merge: 
     ["/path/to/lerobot1",
