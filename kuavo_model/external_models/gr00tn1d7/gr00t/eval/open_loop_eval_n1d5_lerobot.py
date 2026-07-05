@@ -86,8 +86,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--video-backend",
-        default="decord",
-        help="LeRobot video backend (default: decord, avoiding torchcodec ABI issues).",
+        default="pyav",
+        help="LeRobot video backend (default: pyav, avoiding torchcodec ABI issues).",
     )
     return parser.parse_args()
 
