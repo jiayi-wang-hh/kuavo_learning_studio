@@ -33,6 +33,7 @@ import logging
 import os
 import queue
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 import torch
@@ -278,6 +279,32 @@ class Gr00tTrainer(Trainer):
             self.state = TrainerState.load_from_json(
                 os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
             )
+            model = self.model
+            while hasattr(model, "module"):
+                model = model.module
+
+            if hasattr(model, "peft_config"):
+                from peft import set_peft_model_state_dict
+                from safetensors.torch import load_file
+
+                adapter_path = Path(resume_from_checkpoint) / "adapter_model.safetensors"
+                if not adapter_path.is_file():
+                    raise FileNotFoundError(
+                        f"Missing PEFT adapter checkpoint: {adapter_path}"
+                    )
+
+                load_result = set_peft_model_state_dict(
+                    model,
+                    load_file(str(adapter_path)),
+                    adapter_name="default",
+                )
+                logging.info(
+                    "Explicitly loaded PEFT adapter from %s "
+                    "(missing_keys=%d, unexpected_keys=%d)",
+                    adapter_path,
+                    len(load_result.missing_keys),
+                    len(load_result.unexpected_keys),
+                )
 
         return super().train(resume_from_checkpoint=resume_from_checkpoint, **kwargs)
 
