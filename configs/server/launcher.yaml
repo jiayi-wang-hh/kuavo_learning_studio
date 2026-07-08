@@ -58,7 +58,22 @@ adapters:
       model_repo_root: ""                                     # 留空 -> external_models/gr00tn1d7
 
   # ============================================================
-  # LingBot-VLA 
+  # LeRobot GR00T N1.5
+  # ============================================================
+  groot_n15:
+    adapter: lerobot_gr00t_n15
+    env:
+      mode: uv
+      project: ${REPO_ROOT}/kuavo_model/external_models/openpi
+    args:
+      checkpoint: /path/to/gr00t_n15/checkpoints/5000/pretrained_model  # LeRobot pretrained_model dir
+      which_arm: both
+      execution_horizon: 16
+      device: cuda
+      model_repo_root: ""                                     # empty -> external_models/openpi
+
+  # ============================================================
+  # LingBot-VLA
   # ============================================================
   lingbotvla:
     adapter: lingbot_vla
