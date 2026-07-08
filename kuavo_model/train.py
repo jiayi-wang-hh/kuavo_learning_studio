@@ -215,6 +215,49 @@ def _build_lerobot_train_command(config_path: Path, passthrough_args: list[str])
     return ["-m", "lerobot.scripts.lerobot_train", f"--config_path={config_path}", *passthrough_args]
 
 
+def _normalize_groot_passthrough_args(passthrough_args: list[str]) -> list[str]:
+    """Accept common GR00T finetune aliases and forward them to policy fields."""
+    aliases = {
+        "--lora_rank": "policy.lora_rank",
+        "--lora-rank": "policy.lora_rank",
+        "--lora_alpha": "policy.lora_alpha",
+        "--lora-alpha": "policy.lora_alpha",
+        "--lora_dropout": "policy.lora_dropout",
+        "--lora-dropout": "policy.lora_dropout",
+        "--lora_full_model": "policy.lora_full_model",
+        "--lora-full-model": "policy.lora_full_model",
+    }
+    boolean_fields = {"policy.lora_full_model"}
+    normalized: list[str] = []
+    i = 0
+    while i < len(passthrough_args):
+        arg = passthrough_args[i]
+        key, sep, value = arg.partition("=")
+        field = aliases.get(key)
+        if field is None:
+            normalized.append(arg)
+            i += 1
+            continue
+
+        if sep:
+            normalized.append(f"--{field}={value}")
+            i += 1
+            continue
+
+        if i + 1 < len(passthrough_args) and not passthrough_args[i + 1].startswith("--"):
+            normalized.append(f"--{field}={passthrough_args[i + 1]}")
+            i += 2
+            continue
+
+        if field in boolean_fields:
+            normalized.append(f"--{field}=true")
+        else:
+            normalized.append(f"--{field}")
+        i += 1
+
+    return normalized
+
+
 def _build_command(
     config_path: Path,
     passthrough_args: list[str],
@@ -358,6 +401,8 @@ def main() -> int:
 
     # If  train_config.json keeps resume=false in Checkpoint, --resume=true sets cfg.resume so that validate + state could reload and run.
     passthrough = list(passthrough_args)
+    if args.policy == "gr00t":
+        passthrough = _normalize_groot_passthrough_args(passthrough)
     if resume_from is not None:
         passthrough.append("--resume=true")
 

@@ -93,6 +93,33 @@ class GrootConfig(PreTrainedConfig):
     # Whether to use the full model for LORA
     lora_full_model: bool = False
 
+    # LoRA targets match the upstream GR00T module names.
+    lora_vision_target_modules: tuple[str, ...] = (
+        "self_attn.q_proj",
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+        "self_attn.out_proj",
+        "mlp.fc1",
+        "mlp.fc2",
+    )
+    lora_vlm_target_modules: tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
+    lora_action_expert_target_modules: tuple[str, ...] = (
+        "to_q",
+        "to_k",
+        "to_v",
+        "to_out.0",
+        "ff.net.0.proj",
+        "ff.net.2",
+    )
+
     # Training parameters (matching groot_finetune_script.py)
     optimizer_lr: float = 1e-4
     optimizer_betas: tuple[float, float] = (0.95, 0.999)
