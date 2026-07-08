@@ -7,9 +7,6 @@ from typing import Any
 
 import torch
 
-from lerobot.configs import PreTrainedConfig
-from lerobot.policies.factory import get_policy_class, make_pre_post_processors
-
 from kuavo_deploy.utils.xvla_florence_pad_token import install_xvla_florence_pad_token_dict_patch
 
 
@@ -68,6 +65,12 @@ def load_native_policy_bundle(
     device: torch.device,
     strict: bool = True,
 ) -> tuple[Any, Any, Any, Path]:
+    # Keep LeRobot optional for external-server clients (policy_type=client).
+    # Native policies still apply the compatibility patches before importing
+    # LeRobot's public policy APIs.
+    from lerobot_patches import custom_patches as _custom_patches  # noqa: F401
+    from lerobot.configs import PreTrainedConfig
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
     wall = time.perf_counter()
     _progress(

@@ -29,8 +29,8 @@ pip install -e ".[pusht]"
 """
 import sys,os
 import gc
+import random
 from std_srvs.srv import Trigger, TriggerRequest, TriggerResponse
-from lerobot_patches import custom_patches
 
 from pathlib import Path
 
@@ -38,11 +38,9 @@ from sympy import im
 from dataclasses import dataclass, field
 import hydra
 import gymnasium as gym
-import imageio
 import numpy
 import torch
 from tqdm import tqdm
-from lerobot.utils.random_utils import set_seed
 import datetime
 import time
 import numpy as np
@@ -75,6 +73,15 @@ pause_flag = threading.Event()
 stop_flag = threading.Event()
 success_evt = threading.Event()
 
+
+def set_seed(seed: int) -> None:
+    """Set rollout seeds without requiring LeRobot in client mode."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 def env_init_service(req):
     log_robot.info(f"env_init_callback! req = {req}")
     init_evt.set()
@@ -99,16 +106,6 @@ def env_success_callback(msg):
 pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_size=10)
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
 
-
-def save_rollout_video(output_path: Path, frames: list[np.ndarray], fps: int | float) -> None:
-    if not frames:
-        return
-    try:
-        imageio.mimsave(str(output_path), frames, fps=fps, codec="libx264")
-    except Exception as exc:
-        log_robot.warning(f"Failed to write mp4 '{output_path.name}': {exc}. Falling back to gif.")
-        gif_path = output_path.with_suffix(".gif")
-        imageio.mimsave(str(gif_path), frames, fps=fps)
 
 def safe_reset_service(reset_service) -> None:
     """安全重置服务"""
@@ -212,16 +209,8 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     # raise ValueError("stop for debug!")
     start_service(TriggerRequest())
 
-    # Prepare to collect every rewards and all the frames of the episode,
-    # from initial state to final state.
+    # Prepare to collect rewards for the episode. Simulator video recording is disabled.
     rewards = []
-    cam_keys = [k for k in observation.keys() if "images" in k or "depth" in k]
-
-    frame_temp_dirs = {}
-    for k in cam_keys:
-        temp_dir = output_directory / f"temp_frames_{episode}_{k}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        frame_temp_dirs[k] = temp_dir
 
 
     average_exec_time = 0
@@ -237,6 +226,18 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
             return 0
         
         start_time = time.time()
+        if step < 10:
+            state = np.asarray(observation["observation.state"]).reshape(-1)
+            print(
+                f"step={step}",
+                "state_shape=", state.shape,
+                "left_arm=", state[:7],
+                "left_gripper=", state[7],
+                "right_arm=", state[8:15],
+                "right_gripper=", state[15],
+                flush=True,
+            )
+
         if cfg.policy_type != "client":
             observation = inject_task_prompt(observation, task_prompt)
         observation = preprocessor(observation)
@@ -262,13 +263,6 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
         
         rewards.append(reward)
 
-        for k in cam_keys:
-            frame_path = frame_temp_dirs[k] / f"frame_{step:04d}.png"
-            img = (observation[k].squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-            if img.shape[-1] == 1:
-                img = img.squeeze(-1)
-            imageio.imwrite(str(frame_path), img)
-
         # The rollout is considered done when the success state is reached (i.e. terminated is True),
         # or the maximum number of iterations is reached (i.e. truncated is True)
         done = terminated | truncated | done
@@ -279,27 +273,10 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
         log_model.debug(f"Step {step} time: {end_time - start_time:.3f}s")
         average_step_time += end_time - start_time
     
-    # Get the speed of environment (i.e. its number of frames per second).
-    fps = env.unwrapped.ros_rate
-
     log_model.info(f"average exec time: {average_exec_time / step:.3f}s")
     log_model.info(f"average action infer time: {average_action_infer_time / step:.3f}s")
     log_model.info(f"average step time: {average_step_time / step:.3f}s")
     log_model.info(f"average sleep time: {env.unwrapped.average_sleep_time / step:.3f}s")
-    
-    for cam in cam_keys:
-        temp_dir = frame_temp_dirs[cam]
-        frame_files = sorted(temp_dir.glob("frame_*.png"))
-        frames = [imageio.imread(str(f)) for f in frame_files]
-        output_path = output_directory / f"rollout_{episode}_{cam}.mp4"
-        save_rollout_video(output_path, frames, fps)
-        
-
-        for f in frame_files:
-            f.unlink()
-        temp_dir.rmdir()
-        
-        del frames
 
     success = success_evt.is_set()
     
@@ -427,7 +404,7 @@ def kuavo_eval_autotest(config: KuavoConfig):
     log_model.info(f"🎯 Evaluation completed!")
     log_model.info(f"📊 Success count: {success_count}/{eval_episodes}")
     log_model.info(f"📈 Success rate: {success_count / eval_episodes:.2%}")
-    log_model.info(f"📁 Videos and logs saved to: {output_directory}")
+    log_model.info(f"📁 Evaluation logs saved to: {output_directory}")
     log_model.info("="*50)
     init_service.shutdown()
     pause_sub.unregister()

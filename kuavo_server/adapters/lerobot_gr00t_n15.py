@@ -207,6 +207,7 @@ class LeRobotGr00tN15Adapter(ModelServerAdapter):
         self.execution_horizon = execution_horizon if execution_horizon and execution_horizon > 0 else None
         self._pending_actions: list[np.ndarray] = []
         self._last_state16: np.ndarray = np.zeros(16, dtype=np.float32)
+        self._warned_missing_depth: set[str] = set()
 
         print(f"[lerobot-gr00t-n15] initializing adapter={self.name}", flush=True)
         self.model = _LeRobotGr00tN15Runtime(
@@ -294,6 +295,20 @@ class LeRobotGr00tN15Adapter(ModelServerAdapter):
             source = "observation.images.head_cam_h"
         return _image_to_chw_tensor(obs.get(source, obs["observation.images.head_cam_h"]))
 
+    def _depth_for_feature(self, key: str, obs: dict[str, Any]) -> Any:
+        if key in obs:
+            return _image_to_chw_tensor(obs[key])
+
+        if key not in self._warned_missing_depth:
+            print(
+                f"[lerobot-gr00t-n15] Missing depth feature '{key}', filling with zeros. "
+                "For best performance, provide the depth observation used during training.",
+                flush=True,
+            )
+            self._warned_missing_depth.add(key)
+
+        return torch.zeros_like(self._image_for_feature(key, obs))
+
     def _build_policy_input(self, obs: dict[str, Any]) -> dict[str, Any]:
         if "observation.state" not in obs:
             raise KeyError("Missing required observation.state")
@@ -307,6 +322,8 @@ class LeRobotGr00tN15Adapter(ModelServerAdapter):
                 policy_input[key] = torch.as_tensor(self._state_for_policy(obs), dtype=torch.float32)
             elif key in obs and key.startswith("observation.images."):
                 policy_input[key] = _image_to_chw_tensor(obs[key])
+            elif key.startswith("observation.depth"):
+                policy_input[key] = self._depth_for_feature(key, obs)
             elif key.startswith("observation.images.") or key == "observation.image":
                 policy_input[key] = self._image_for_feature(key, obs)
             elif key in obs:

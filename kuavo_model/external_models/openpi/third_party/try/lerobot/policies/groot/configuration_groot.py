@@ -64,6 +64,10 @@ class GrootConfig(PreTrainedConfig):
 
     # Fine-tuning control arguments
 
+    # Compatibility with checkpoints saved by LeRobot versions that included
+    # this generic PEFT flag in policy configs.
+    use_peft: bool = False
+
     # Whether to fine-tune the llm backbone
     tune_llm: bool = False
 

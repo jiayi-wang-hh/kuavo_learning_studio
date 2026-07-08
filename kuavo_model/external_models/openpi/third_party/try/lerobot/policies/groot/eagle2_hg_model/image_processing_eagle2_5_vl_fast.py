@@ -163,6 +163,28 @@ class Eagle25VLImageProcessorFast(BaseImageProcessorFast):
         """
         return make_flat_list_of_images(images)
 
+    def _prepare_image_like_inputs(
+        self,
+        images: ImageInput,
+        do_convert_rgb: Optional[bool] = None,
+        input_data_format: Optional[ChannelDimension | str] = None,
+        device: Optional["torch.device"] = None,
+    ) -> list["torch.Tensor"]:
+        parent_prepare = getattr(super(), "_prepare_image_like_inputs", None)
+        if parent_prepare is not None:
+            return parent_prepare(
+                images=images,
+                do_convert_rgb=do_convert_rgb,
+                input_data_format=input_data_format,
+                device=device,
+            )
+        return self._prepare_input_images(
+            images=images,
+            do_convert_rgb=do_convert_rgb,
+            input_data_format=input_data_format,
+            device=device,
+        )
+
     def _resize_for_patching(
         self,
         image: "torch.Tensor",

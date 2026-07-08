@@ -4,7 +4,7 @@ env:  # 推理环境设置
   which_arm: both  # 控制左手、右手还是双手
   eef_type: rq2f85  # 夹爪或手型类型
   ros_rate: 10  # 推理频率
-  direct_to_wbc: false  # 是否使用direct to wbc模式。
+  direct_to_wbc: true  # 是否使用direct to wbc模式。
   enable_action_interpolation: true
   control_rate: 100  # WBC插值后的实际控制指令频率
   
@@ -12,8 +12,8 @@ env:  # 推理环境设置
 inference:  # 推理和评测设置
   go_bag_path: null    # bag 回放路径
   policy_type: client  # 要加载的模型类型,外挂模式选择client, 选择client模式后下面的pretrained_path失去作用
-  pretrained_path: /path/to/checkpoint  # 要加载的权重路径。
+  pretrained_path: /home/yuan/yuan_meng_kuavo/jiayi/kuavo_learning_studio/outputs/gr00t_lora_action_vlm/checkpoint-5000  # 要加载的权重路径。
   eval_episodes: 10  # 评测跑多少条
   max_episode_steps: 200  # 每条最多跑多少步
 
-  task_prompt: "robot manipulation"
+  task_prompt: "pick and place"

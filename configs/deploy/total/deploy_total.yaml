@@ -6,7 +6,7 @@ env:  # 推理环境设置。
   control_mode: joint  # 控制方式。
   which_arm: both  # 控制左手、右手还是双手。
 
-  ros_rate: 10  # ROS 运行频率。
+  ros_rate: 0.4  # ROS 运行频率。
   direct_to_wbc: false  # 是否直接发给 WBC。
   enable_action_interpolation: true
   control_rate: 100  # WBC/插值后的实际控制指令频率
