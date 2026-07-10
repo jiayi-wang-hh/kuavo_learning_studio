@@ -26,6 +26,8 @@ from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.experiment.experiment import run
 
+from loguru import logger
+
 
 # Make sure the user provided modality config is registered.
 def load_modality_config(modality_config_path: str):
@@ -47,6 +49,19 @@ if __name__ == "__main__":
         os.environ["LOGURU_LEVEL"] = "INFO"
     # Use tyro for clean CLI
     ft_config = tyro.cli(FinetuneConfig, description=__doc__)
+
+    output_dir = Path(ft_config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.add(
+        output_dir / "train.log",
+        level="INFO",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}",
+        rotation="100 MB",
+        retention=5,
+        enqueue=True,
+    )
+    
     from gr00t.data.embodiment_tags import EmbodimentTag
 
     ft_config.embodiment_tag = EmbodimentTag.resolve(ft_config.embodiment_tag)
