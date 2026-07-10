@@ -1,0 +1,56 @@
+[1mdiff --git a/configs/data/KuavoRosbag2Lerobot.yaml b/configs/data/KuavoRosbag2Lerobot.yaml[m
+[1mindex 328a6bd..1d3de7b 100644[m
+[1m--- a/configs/data/KuavoRosbag2Lerobot.yaml[m
+[1m+++ b/configs/data/KuavoRosbag2Lerobot.yaml[m
+[36m@@ -14,8 +14,8 @@[m [mhydra:  # Hydra 配置文件保存目录，仅供参数检查使用[m
+ [m
+ rosbag:[m
+   mode: normal  # 可选: normal, resume, merge[m
+[31m-  rosbag_dir: /path/to/rosbags # rosbag文件存放的目录。normal / resume 模式需要[m
+[31m-  target_dir: /path/to/target_dir  # 输出父目录；最终数据集会生成在 target_dir/lerobot[m
+[32m+[m[32m  rosbag_dir: /root/bayes-tmp/kuavo_dataset/icra_task1_10 # rosbag文件存放的目录。normal / resume 模式需要[m
+[32m+[m[32m  target_dir: /root/bayes-tmp/kuavo_dataset/icra_task1_lerobot_jiayi_10  # 输出父目录；最终数据集会生成在 target_dir/lerobot[m
+   lerobot_dir_resume: /path/to/lerobot_resume  # resume 模式下，已有 lerobot 数据集的目录[m
+   lerobot_dir_merge: [m
+     ["/path/to/lerobot1",[m
+[1mdiff --git a/configs/train/lerobot/gr00t.yaml b/configs/train/lerobot/gr00t.yaml[m
+[1mindex 25df8a6..42a2717 100644[m
+[1m--- a/configs/train/lerobot/gr00t.yaml[m
+[1m+++ b/configs/train/lerobot/gr00t.yaml[m
+[36m@@ -3,17 +3,17 @@[m
+ [m
+ dataset:  # 数据集相关设置。[m
+   repo_id: "lerobot/your_dataset"  # 数据集名字，用来做标识。[m
+[31m-  root: null  # 本地数据路径。[m
+[32m+[m[32m  root: /root/bayes-tmp/kuavo_icra_dataset/icra_task1_lerobot/lerobot  # 本地数据路径。[m
+ [m
+ training:  # 训练流程设置。[m
+   resume: false  # 是否从 output_dir 最新 checkpoint 继续训；续训改为 true，并修改 output_dir 为上阶段 run 的产物路径，如 outputs/train/gr00t_YYYYMMDD_HHMMSS。[m
+   output_dir: "outputs/train/gr00t"  # 训练输出目录。[m
+   job_name: "gr00t"  # 实验名。[m
+   batch_size: 8  # 每张卡上的 batch size。[m
+[31m-  steps: 10000  # 总训练步数。[m
+[31m-  save_freq: 1000  # 每隔多少步存一次权重。[m
+[31m-  log_freq: 100  # 每隔多少步打一次日志。[m
+[31m-  eval_freq: 1000  # 每隔多少步做一次评测。[m
+[32m+[m[32m  steps: 50000  # 总训练步数。[m
+[32m+[m[32m  save_freq: 5000  # 每隔多少步存一次权重。[m
+[32m+[m[32m  log_freq: 500  # 每隔多少步打一次日志。[m
+[32m+[m[32m  eval_freq: 5000  # 每隔多少步做一次评测。[m
+   num_workers: 4  # 读数据用的进程数。[m
+   seed: 1000  # 随机种子。[m
+ [m
+[1mdiff --git a/kuavo_model/external_models/gr00tn1d7/scripts/lerobot_conversion/convert_v3_to_v2.py b/kuavo_model/external_models/gr00tn1d7/scripts/lerobot_conversion/convert_v3_to_v2.py[m
+[1mindex a13bd16..42fc337 100644[m
+[1m--- a/kuavo_model/external_models/gr00tn1d7/scripts/lerobot_conversion/convert_v3_to_v2.py[m
+[1m+++ b/kuavo_model/external_models/gr00tn1d7/scripts/lerobot_conversion/convert_v3_to_v2.py[m
+[36m@@ -281,7 +281,8 @@[m [mdef _validate_video_paths(src: Path, dst: Path) -> None:[m
+             raise ValueError(f"Path contains invalid control characters: {name} path")[m
+ [m
+     # Additional check: ensure resolved paths don't point to system directories[m
+[31m-    system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot", "/root"}[m
+[32m+[m[32m    # system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot", "/root"}[m
+[32m+[m[32m    system_dirs = {"/etc", "/sys", "/proc", "/dev", "/boot"}[m
+     for resolved_path, name in [(src_resolved, "source"), (dst_resolved, "destination")]:[m
+         path_str = str(resolved_path)[m
+         for sys_dir in system_dirs:[m
