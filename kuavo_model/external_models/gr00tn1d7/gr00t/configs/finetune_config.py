@@ -57,6 +57,18 @@ class FinetuneConfig:
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
+    use_diffusion_lora: bool = False
+    """If True, freeze the base diffusion model and train LoRA adapters in its attention layers."""
+
+    diffusion_lora_rank: int = 8
+    """Rank of the diffusion-model LoRA adapters."""
+
+    diffusion_lora_alpha: int = 16
+    """Scaling alpha of the diffusion-model LoRA adapters."""
+
+    diffusion_lora_dropout: float = 0.05
+    """Dropout probability used by the diffusion-model LoRA adapters."""
+
     state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.

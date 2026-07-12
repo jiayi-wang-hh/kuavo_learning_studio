@@ -92,6 +92,10 @@ if __name__ == "__main__":
     config.model.tune_visual = ft_config.tune_visual
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
+    config.model.use_diffusion_lora = ft_config.use_diffusion_lora
+    config.model.diffusion_lora_rank = ft_config.diffusion_lora_rank
+    config.model.diffusion_lora_alpha = ft_config.diffusion_lora_alpha
+    config.model.diffusion_lora_dropout = ft_config.diffusion_lora_dropout
     config.model.state_dropout_prob = ft_config.state_dropout_prob
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params

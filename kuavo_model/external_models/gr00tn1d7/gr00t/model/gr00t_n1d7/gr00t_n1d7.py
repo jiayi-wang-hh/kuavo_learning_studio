@@ -103,6 +103,39 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
+        self.use_diffusion_lora = config.use_diffusion_lora
+        if self.use_diffusion_lora:
+            self._add_diffusion_lora()
+
+    def _add_diffusion_lora(self) -> None:
+        """Freeze the base DiT and inject trainable LoRA adapters into its attention layers."""
+        if self.tune_diffusion_model:
+            raise ValueError(
+                "use_diffusion_lora=True requires tune_diffusion_model=False; "
+                "pass --no-tune-diffusion-model when enabling diffusion LoRA."
+            )
+
+        from peft import LoraConfig, inject_adapter_in_model
+
+        lora_config = LoraConfig(
+            r=self.config.diffusion_lora_rank,
+            lora_alpha=self.config.diffusion_lora_alpha,
+            lora_dropout=self.config.diffusion_lora_dropout,
+            target_modules=list(self.config.diffusion_lora_target_modules),
+            bias="none",
+        )
+        self.model = inject_adapter_in_model(lora_config, self.model)
+
+        trainable_lora = [
+            name
+            for name, parameter in self.model.named_parameters()
+            if parameter.requires_grad and "lora_" in name
+        ]
+        if not trainable_lora:
+            raise RuntimeError(
+                "Diffusion LoRA was enabled, but no trainable LoRA parameters were injected."
+            )
+        logger.info("Injected diffusion LoRA into %d parameters", len(trainable_lora))
 
     def set_trainable_parameters(
         self, tune_projector: bool, tune_diffusion_model: bool, tune_vlln: bool
@@ -147,7 +180,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 self.action_decoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
-            if not self.tune_diffusion_model:
+            if not self.tune_diffusion_model and not self.use_diffusion_lora:
                 self.model.eval()
             if not self.tune_vlln:
                 self.vlln.eval()
