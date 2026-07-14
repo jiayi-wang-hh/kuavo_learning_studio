@@ -90,7 +90,7 @@ if __name__ == "__main__":
     else:
         config.model.extra_augmentation_config = None
 
-    config.model.load_bf16 = False
+    config.model.load_bf16 = ft_config.load_bf16
     config.model.reproject_vision = False
     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
@@ -103,6 +103,7 @@ if __name__ == "__main__":
     config.training.dataloader_num_workers = ft_config.dataloader_num_workers
     config.training.learning_rate = ft_config.learning_rate
     config.training.gradient_accumulation_steps = ft_config.gradient_accumulation_steps
+    config.training.gradient_checkpointing = ft_config.gradient_checkpointing
     config.training.output_dir = ft_config.output_dir
     config.training.save_steps = ft_config.save_steps
     config.training.save_total_limit = ft_config.save_total_limit

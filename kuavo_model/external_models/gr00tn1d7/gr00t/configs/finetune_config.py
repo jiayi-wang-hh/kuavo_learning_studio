@@ -135,6 +135,12 @@ class FinetuneConfig:
     gradient_accumulation_steps: int = 1
     """Number of forward passes to accumulate before performing a backward/update step."""
 
+    gradient_checkpointing: bool = False
+    """If True, recompute transformer activations during backward to reduce VRAM usage."""
+
+    load_bf16: bool = False
+    """If True, load the frozen Qwen3-VL backbone in BF16 to reduce VRAM usage."""
+
     output_dir: str = "./outputs"
     """Directory where model checkpoints, logs, and outputs are saved."""
 

@@ -24,6 +24,7 @@ from diffusers.models.embeddings import SinusoidalPositionalEmbedding, TimestepE
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def _is_spark_sm121() -> bool:
@@ -289,6 +290,16 @@ class DiT(ModelMixin, ConfigMixin):
             sum(p.numel() for p in self.parameters() if p.requires_grad),
         )
 
+    def _run_block(self, block, hidden_states, **kwargs):
+        if self.training and self.gradient_checkpointing:
+            return checkpoint(
+                block,
+                hidden_states,
+                use_reentrant=False,
+                **kwargs,
+            )
+        return block(hidden_states, **kwargs)
+
     def forward(
         self,
         hidden_states: torch.Tensor,  # Shape: (B, T, D)
@@ -309,7 +320,8 @@ class DiT(ModelMixin, ConfigMixin):
         # Process through transformer blocks
         for idx, block in enumerate(self.transformer_blocks):
             if idx % 2 == 1 and self.config.interleave_self_attention:
-                hidden_states = block(
+                hidden_states = self._run_block(
+                    block,
                     hidden_states,
                     attention_mask=None,
                     encoder_hidden_states=None,
@@ -317,7 +329,8 @@ class DiT(ModelMixin, ConfigMixin):
                     temb=temb,
                 )
             else:
-                hidden_states = block(
+                hidden_states = self._run_block(
+                    block,
                     hidden_states,
                     attention_mask=None,
                     encoder_hidden_states=encoder_hidden_states,
@@ -379,7 +392,8 @@ class AlternateVLDiT(DiT):
         for idx, block in enumerate(self.transformer_blocks):
             if idx % 2 == 1:
                 # Self-attention blocks
-                hidden_states = block(
+                hidden_states = self._run_block(
+                    block,
                     hidden_states,
                     attention_mask=None,
                     encoder_hidden_states=None,
@@ -395,7 +409,8 @@ class AlternateVLDiT(DiT):
                     # Attend to image tokens
                     curr_encoder_attention_mask = image_attention_mask
 
-                hidden_states = block(
+                hidden_states = self._run_block(
+                    block,
                     hidden_states,
                     attention_mask=None,
                     encoder_hidden_states=encoder_hidden_states,
@@ -463,6 +478,11 @@ class SelfAttentionTransformer(ModelMixin, ConfigMixin):
             sum(p.numel() for p in self.parameters() if p.requires_grad),
         )
 
+    def _run_block(self, block, hidden_states):
+        if self.training and self.gradient_checkpointing:
+            return checkpoint(block, hidden_states, use_reentrant=False)
+        return block(hidden_states)
+
     def forward(
         self,
         hidden_states: torch.Tensor,  # Shape: (B, T, D)
@@ -474,7 +494,7 @@ class SelfAttentionTransformer(ModelMixin, ConfigMixin):
 
         # Process through transformer blocks
         for idx, block in enumerate(self.transformer_blocks):
-            hidden_states = block(hidden_states)
+            hidden_states = self._run_block(block, hidden_states)
             all_hidden_states.append(hidden_states)
 
         if return_all_hidden_states:
