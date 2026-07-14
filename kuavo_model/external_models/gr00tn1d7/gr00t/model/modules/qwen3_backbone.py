@@ -95,9 +95,9 @@ class Qwen3Backbone(torch.nn.Module):
 
         self.select_layer = select_layer
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
-        self.use_visual_lora = use_visual_lora
-        if self.use_visual_lora:
-            self._add_visual_lora(
+        self.use_visual_lora = False
+        if use_visual_lora:
+            self.enable_visual_lora(
                 rank=visual_lora_rank,
                 alpha=visual_lora_alpha,
                 dropout=visual_lora_dropout,
@@ -109,6 +109,19 @@ class Qwen3Backbone(torch.nn.Module):
                 if p.requires_grad:
                     p.data = p.data.to(torch.float32)
                     logger.debug(f"Casting trainable parameter {n} to fp32")
+
+    def enable_visual_lora(
+        self,
+        rank: int,
+        alpha: int,
+        dropout: float,
+        target_modules: tuple[str, ...],
+    ) -> None:
+        """Inject visual LoRA, including when called after checkpoint loading."""
+        if self.use_visual_lora:
+            return
+        self._add_visual_lora(rank, alpha, dropout, target_modules)
+        self.use_visual_lora = True
 
     def _add_visual_lora(
         self,

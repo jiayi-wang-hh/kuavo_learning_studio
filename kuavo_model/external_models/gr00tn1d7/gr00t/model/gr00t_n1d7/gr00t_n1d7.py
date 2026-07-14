@@ -103,9 +103,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
-        self.use_diffusion_lora = config.use_diffusion_lora
+        self.use_diffusion_lora = False
+        if config.use_diffusion_lora:
+            self.enable_diffusion_lora()
+
+    def enable_diffusion_lora(self) -> None:
+        """Inject diffusion LoRA, including when called after checkpoint loading."""
         if self.use_diffusion_lora:
-            self._add_diffusion_lora()
+            return
+        self._add_diffusion_lora()
+        self.use_diffusion_lora = True
 
     def _add_diffusion_lora(self) -> None:
         """Freeze the base DiT and inject trainable LoRA adapters into its attention layers."""

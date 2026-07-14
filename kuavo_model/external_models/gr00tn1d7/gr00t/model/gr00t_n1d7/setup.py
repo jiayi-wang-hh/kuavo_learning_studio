@@ -79,17 +79,82 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         """Setup model with proper vocabulary expansion."""
         skip_weight_loading = getattr(self.config.training, "skip_weight_loading", False)
         if self.config.training.start_from_checkpoint is not None and not skip_weight_loading:
+            checkpoint_config = Gr00tN1d7Config.from_pretrained(
+                self.config.training.start_from_checkpoint,
+                **self.transformers_loading_kwargs,
+            )
+            checkpoint_has_visual_lora = getattr(
+                checkpoint_config, "use_visual_lora", False
+            )
+            checkpoint_has_diffusion_lora = getattr(
+                checkpoint_config, "use_diffusion_lora", False
+            )
+            enable_visual_lora = (
+                self.config.model.use_visual_lora or checkpoint_has_visual_lora
+            )
+            enable_diffusion_lora = (
+                self.config.model.use_diffusion_lora or checkpoint_has_diffusion_lora
+            )
+            visual_lora_rank = (
+                checkpoint_config.visual_lora_rank
+                if checkpoint_has_visual_lora
+                else self.config.model.visual_lora_rank
+            )
+            visual_lora_alpha = (
+                checkpoint_config.visual_lora_alpha
+                if checkpoint_has_visual_lora
+                else self.config.model.visual_lora_alpha
+            )
+            visual_lora_dropout = (
+                checkpoint_config.visual_lora_dropout
+                if checkpoint_has_visual_lora
+                else self.config.model.visual_lora_dropout
+            )
+            visual_lora_targets = (
+                checkpoint_config.visual_lora_target_modules
+                if checkpoint_has_visual_lora
+                else self.config.model.visual_lora_target_modules
+            )
+            diffusion_lora_rank = (
+                checkpoint_config.diffusion_lora_rank
+                if checkpoint_has_diffusion_lora
+                else self.config.model.diffusion_lora_rank
+            )
+            diffusion_lora_alpha = (
+                checkpoint_config.diffusion_lora_alpha
+                if checkpoint_has_diffusion_lora
+                else self.config.model.diffusion_lora_alpha
+            )
+            diffusion_lora_dropout = (
+                checkpoint_config.diffusion_lora_dropout
+                if checkpoint_has_diffusion_lora
+                else self.config.model.diffusion_lora_dropout
+            )
+            diffusion_lora_targets = (
+                checkpoint_config.diffusion_lora_target_modules
+                if checkpoint_has_diffusion_lora
+                else self.config.model.diffusion_lora_target_modules
+            )
+
+            # Recreate adapters before loading only when they already exist in
+            # the checkpoint. New adapters are injected after the base weights
+            # load, avoiding PEFT's base_layer key renaming mismatch.
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
                 tune_visual=self.config.model.tune_visual,
-                use_visual_lora=self.config.model.use_visual_lora,
-                visual_lora_rank=self.config.model.visual_lora_rank,
-                visual_lora_alpha=self.config.model.visual_lora_alpha,
-                visual_lora_dropout=self.config.model.visual_lora_dropout,
-                visual_lora_target_modules=self.config.model.visual_lora_target_modules,
+                use_visual_lora=checkpoint_has_visual_lora,
+                visual_lora_rank=visual_lora_rank,
+                visual_lora_alpha=visual_lora_alpha,
+                visual_lora_dropout=visual_lora_dropout,
+                visual_lora_target_modules=visual_lora_targets,
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
+                use_diffusion_lora=checkpoint_has_diffusion_lora,
+                diffusion_lora_rank=diffusion_lora_rank,
+                diffusion_lora_alpha=diffusion_lora_alpha,
+                diffusion_lora_dropout=diffusion_lora_dropout,
+                diffusion_lora_target_modules=diffusion_lora_targets,
                 tune_vlln=self.config.model.tune_vlln,
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
@@ -110,24 +175,7 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            expected_visual_lora_missing = [
-                key
-                for key in missing_keys
-                if self.config.model.use_visual_lora
-                and key.startswith("backbone.")
-                and ".visual." in key
-                and "lora_" in key
-            ]
-            if expected_visual_lora_missing:
-                logging.info(
-                    "Initialized %d new visual LoRA parameter tensors",
-                    len(expected_visual_lora_missing),
-                )
-            other_missing = [
-                key
-                for key in missing_keys
-                if "mask_token" not in key and key not in expected_visual_lora_missing
-            ]
+            other_missing = [key for key in missing_keys if "mask_token" not in key]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")
@@ -140,6 +188,36 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     "Checkpoint weight mismatch for "
                     f"{self.config.training.start_from_checkpoint}:\n" + "\n".join(errors)
                 )
+
+            if enable_visual_lora and not checkpoint_has_visual_lora:
+                model.backbone.enable_visual_lora(
+                    rank=visual_lora_rank,
+                    alpha=visual_lora_alpha,
+                    dropout=visual_lora_dropout,
+                    target_modules=visual_lora_targets,
+                )
+                if self.config.model.backbone_trainable_params_fp32:
+                    for name, parameter in model.backbone.named_parameters():
+                        if parameter.requires_grad and "lora_" in name:
+                            parameter.data = parameter.data.to(torch.float32)
+                logging.info("Initialized visual LoRA after loading base checkpoint")
+
+            if enable_diffusion_lora and not checkpoint_has_diffusion_lora:
+                model.action_head.enable_diffusion_lora()
+                logging.info("Initialized diffusion LoRA after loading base checkpoint")
+
+            model.config.use_visual_lora = enable_visual_lora
+            model.config.use_diffusion_lora = enable_diffusion_lora
+            self.config.model.use_visual_lora = enable_visual_lora
+            self.config.model.use_diffusion_lora = enable_diffusion_lora
+            self.config.model.visual_lora_rank = visual_lora_rank
+            self.config.model.visual_lora_alpha = visual_lora_alpha
+            self.config.model.visual_lora_dropout = visual_lora_dropout
+            self.config.model.visual_lora_target_modules = visual_lora_targets
+            self.config.model.diffusion_lora_rank = diffusion_lora_rank
+            self.config.model.diffusion_lora_alpha = diffusion_lora_alpha
+            self.config.model.diffusion_lora_dropout = diffusion_lora_dropout
+            self.config.model.diffusion_lora_target_modules = diffusion_lora_targets
 
         else:
             model = self.model_class(
