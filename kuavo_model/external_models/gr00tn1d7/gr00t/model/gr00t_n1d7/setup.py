@@ -83,6 +83,11 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
                 tune_visual=self.config.model.tune_visual,
+                use_visual_lora=self.config.model.use_visual_lora,
+                visual_lora_rank=self.config.model.visual_lora_rank,
+                visual_lora_alpha=self.config.model.visual_lora_alpha,
+                visual_lora_dropout=self.config.model.visual_lora_dropout,
+                visual_lora_target_modules=self.config.model.visual_lora_target_modules,
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
                 tune_vlln=self.config.model.tune_vlln,
@@ -105,7 +110,24 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            expected_visual_lora_missing = [
+                key
+                for key in missing_keys
+                if self.config.model.use_visual_lora
+                and key.startswith("backbone.")
+                and ".visual." in key
+                and "lora_" in key
+            ]
+            if expected_visual_lora_missing:
+                logging.info(
+                    "Initialized %d new visual LoRA parameter tensors",
+                    len(expected_visual_lora_missing),
+                )
+            other_missing = [
+                key
+                for key in missing_keys
+                if "mask_token" not in key and key not in expected_visual_lora_missing
+            ]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")
