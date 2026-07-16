@@ -44,11 +44,6 @@ adapters:
   # Isaac GR00T N1.7 
   # ============================================================
   groot:
-      use_fp32: false                                         # full-model fp32 (high VRAM)
-      use_fp16: false                                         # replace default bf16 with fp16
-      action_head_fp32: false                                 # action head / flow sampling in fp32
-      disable_flash_attention: false                          # eager attention for NaN isolation
-      visual_fp32: false                                      # visual encoder fp32 (slow fallback)
     adapter: isaac_gr00t_n17
     env:
       mode: uv
@@ -60,16 +55,16 @@ adapters:
       execution_horizon: 16                                   # receding horizon chunk size
       device: cuda
       strict: false                                           # true 时开启严格 IO 检查
+      use_fp32: false                                         # full-model fp32 (high VRAM)
+      use_fp16: false                                         # replace default bf16 with fp16
+      action_head_fp32: false                                 # action head / flow sampling in fp32
+      disable_flash_attention: false                          # eager attention for NaN isolation
+      visual_fp32: false                                      # visual encoder fp32 (slow fallback)
       model_repo_root: ""                                     # 留空 -> external_models/gr00tn1d7
 
   # ============================================================
   # Isaac GR00T N1.7 explicit Kuavo path (diagnostics)
   # ============================================================
-      use_fp32: false
-      use_fp16: false
-      action_head_fp32: false
-      disable_flash_attention: false
-      visual_fp32: false
   groot_explicit:
     adapter: isaac_gr00t_n17_explicit
     env:
@@ -82,9 +77,12 @@ adapters:
       execution_horizon: 16
       device: cuda
       strict: true
+      use_fp32: false
+      use_fp16: false
+      action_head_fp32: false
+      disable_flash_attention: false
+      visual_fp32: false
       model_repo_root: ""
-
-
   # ============================================================
   # LingBot-VLA 
   # ============================================================
