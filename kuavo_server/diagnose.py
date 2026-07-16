@@ -4,12 +4,19 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 import numpy as np
 import torch
 
 from kuavo_deploy.kuavo_service.client import ExternalRobotInferenceClient
+from kuavo_server.dataset_observation import load_dataset_observation
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -81,9 +88,20 @@ def _generic_action_probe(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Probe N1.5 and N1.7 servers with the exact same saved Kuavo observation."
+        description="Probe N1.5 and N1.7 servers with the exact same Kuavo observation."
     )
-    parser.add_argument("--observation", type=Path, required=True, help="torch.save() observation file")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--observation", type=Path, help="torch.save() observation file")
+    source.add_argument("--dataset-path", type=Path, help="Dual-arm Kuavo LeRobot dataset root")
+    parser.add_argument("--episode", type=int, default=0, help="Dataset episode index")
+    parser.add_argument("--frame", type=int, default=0, help="Frame index inside the episode")
+    parser.add_argument(
+        "--model-repo-root",
+        type=Path,
+        default=None,
+        help="N1.7 source tree; defaults to kuavo_model/external_models/gr00tn1d7",
+    )
+    parser.add_argument("--video-backend", type=str, default="torchcodec")
     parser.add_argument(
         "--server",
         action="append",
@@ -93,19 +111,33 @@ def main() -> None:
     )
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--prompt", type=str, default="")
+    parser.add_argument("--prompt", type=str, default=None, help="Override the saved/dataset prompt")
     parser.add_argument("--output", type=Path, default=Path("n15_n17_server_probe.json"))
     args = parser.parse_args()
 
-    observation = torch.load(args.observation, map_location="cpu", weights_only=False)
-    if not isinstance(observation, dict):
-        raise TypeError(f"Expected a saved observation dict, got {type(observation)}")
-    if args.prompt:
-        observation = dict(observation)
-        observation["prompt"] = args.prompt
+    if args.dataset_path is not None:
+        observation, observation_source = load_dataset_observation(
+            args.dataset_path,
+            episode=args.episode,
+            frame=args.frame,
+            prompt_override=args.prompt,
+            model_repo_root=args.model_repo_root,
+            video_backend=args.video_backend,
+        )
+    else:
+        observation = torch.load(args.observation, map_location="cpu", weights_only=False)
+        if not isinstance(observation, dict):
+            raise TypeError(f"Expected a saved observation dict, got {type(observation)}")
+        if args.prompt is not None:
+            observation = dict(observation)
+            observation["prompt"] = args.prompt
+        observation_source = {
+            "type": "torch_file",
+            "path": str(args.observation.expanduser().resolve()),
+        }
 
     report: dict[str, Any] = {
-        "observation_file": str(args.observation.resolve()),
+        "observation_source": observation_source,
         "raw_observation": _raw_observation_report(observation),
         "repeats": args.repeats,
         "seed": args.seed,

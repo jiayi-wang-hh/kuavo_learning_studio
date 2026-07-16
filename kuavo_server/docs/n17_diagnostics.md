@@ -14,6 +14,9 @@ heuristics, or camera fallback caused a deployment mismatch.
 
 ## 1. Capture one pre-action simulator observation
 
+The simulator is optional. To load a frame directly from a dual-arm Kuavo
+LeRobot dataset, skip this section and use the dataset command in section 3.
+
 Set the following in `configs/deploy/deploy.yaml`:
 
 ```yaml
@@ -53,6 +56,35 @@ keys, dimensions, camera inputs, state shape, or finite-value checks do not matc
 It never substitutes the head image for a missing wrist image.
 
 ## 3. Probe all servers with the exact same observation
+
+### Read a dataset frame directly (no simulator required)
+
+Run the diagnostic client in the N1.7 environment so the video decoder and
+LeRobot loader dependencies are available:
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/diagnose.py \
+  --dataset-path /path/to/lerobot_dataset \
+  --episode 0 \
+  --frame 0 \
+  --server n15=localhost:5555 \
+  --server n17=localhost:5556 \
+  --server n17_explicit=localhost:5557 \
+  --repeats 20 \
+  --output outputs/diagnostics/n15_n17_dataset_probe.json
+```
+
+The dataset must contain the dual-arm Kuavo modality groups
+`left_arm,left_gripper,right_arm,right_gripper` and the three video groups
+`head,wrist_left,wrist_right`. The loader concatenates state in exact Kuavo
+order and maps the videos to the raw deployment observation keys. Use
+`--prompt "..."` only when you want to override the dataset task description.
+
+The report records the resolved dataset path, episode, frame, and video backend
+under `observation_source`, making the sampled frame reproducible.
+
+### Read a previously saved observation
 
 ```bash
 python kuavo_server/diagnose.py \
