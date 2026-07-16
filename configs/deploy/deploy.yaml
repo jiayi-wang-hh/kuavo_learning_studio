@@ -17,3 +17,5 @@ inference:  # 推理和评测设置
   max_episode_steps: 200  # 每条最多跑多少步
 
   task_prompt: "robot manipulation"
+  capture_observation_path: ""  # Save the post-reset, pre-action observation; empty disables capture.
+  capture_observation_only: false  # Exit after capture without sending a model action.

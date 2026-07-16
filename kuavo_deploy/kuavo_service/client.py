@@ -224,6 +224,23 @@ class ExternalRobotInferenceClient(BaseInferenceClient):
         if isinstance(response, dict) and response.get("error"):
             raise RuntimeError(f"{response['error']} | request_keys={list(observations.keys())}")
         return response
+
+    def diagnose_observation(
+        self,
+        observations: Dict[str, Any],
+        *,
+        repeats: int = 5,
+        seed: int = 0,
+    ) -> Dict[str, Any]:
+        """Run server-side diagnostics without sending actions to the robot."""
+        response = self.call_endpoint(
+            "diagnose_observation",
+            {"observation": observations, "repeats": repeats, "seed": seed},
+        )
+        if isinstance(response, dict) and response.get("error"):
+            raise RuntimeError(f"{response['error']} | request_keys={list(observations.keys())}")
+        return response
+
         
 
 # policy client
@@ -289,6 +306,12 @@ class PolicyClient:
 
     def predict_action_chunk(self, obs_dict):
         return self.select_action_chunk(obs_dict)
+
+    def diagnose_observation(self, obs_dict, *, repeats: int = 5, seed: int = 0):
+        return self.policy.diagnose_observation(
+            self._prepare_obs(obs_dict), repeats=repeats, seed=seed
+        )
+
 
 
 # # convert hardware observations to policy's observation dict

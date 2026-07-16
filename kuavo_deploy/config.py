@@ -195,6 +195,8 @@ class ConfigInference:
     max_episode_steps: int = 1000
     task_prompt: str = ""
 
+    capture_observation_path: str = ""
+    capture_observation_only: bool = False
     async_inference: bool = False
     async_control_hz: float = 0.0
     async_buffer_size: int = 32

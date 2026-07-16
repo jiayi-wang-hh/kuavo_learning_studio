@@ -204,6 +204,23 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     observation, info = env.reset(seed=seed)
     if cfg.policy_type != "client":
         observation = inject_task_prompt(observation, task_prompt)
+    capture_path = str(getattr(cfg, "capture_observation_path", "")).strip()
+    if capture_path:
+        capture_payload = dict(observation)
+        capture_payload["prompt"] = task_prompt
+        capture_file = Path(capture_path).expanduser().resolve()
+        capture_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(capture_payload, capture_file)
+        log_model.info(f"Saved pre-action observation to {capture_file}")
+        if getattr(cfg, "capture_observation_only", False):
+            env.close()
+            run_single_ros_manager.close()
+            del env
+            del run_single_ros_manager
+            gc.collect()
+            torch.cuda.empty_cache()
+            return 0
+
     # first_img =  (observation["observation.images.head_cam_h"].squeeze().permute(1,2,0).numpy()*255).astype(np.uint8)
     
     # import cv2

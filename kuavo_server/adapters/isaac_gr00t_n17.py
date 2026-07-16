@@ -498,3 +498,15 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         if self.execution_horizon is not None:
             action_chunk = action_chunk[:self.execution_horizon]
         return np.stack([np.asarray(step) for step in action_chunk], axis=0)
+
+    def _canonical_state16(self, raw_state: Any) -> np.ndarray:
+        return _kuavo_state16(raw_state, self.which_arm)
+
+    @staticmethod
+    def _canonical_image(image: Any) -> np.ndarray:
+        return _as_hwc_uint8(image)
+
+    def diagnose_observation(self, request: dict[str, Any]) -> dict[str, Any]:
+        from .n17_diagnostics import diagnose_n17_observation
+
+        return diagnose_n17_observation(self, request)

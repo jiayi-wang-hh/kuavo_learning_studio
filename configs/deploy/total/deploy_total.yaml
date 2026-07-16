@@ -51,6 +51,8 @@ inference:  # 推理和评测设置。
 
   max_episode_steps: 200  # 每条最多跑多少步。
   task_prompt: "robot manipulation"  # 任务提示语。
+  capture_observation_path: ""  # Save the post-reset, pre-action observation; empty disables capture.
+  capture_observation_only: false  # Exit after capture without sending a model action.
 
   async_inference: false  # 是否使用 chunk 异步推理。
   async_control_hz: 0.0  # 异步控制频率，0 表示使用 env.ros_rate。

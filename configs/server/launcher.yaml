@@ -58,6 +58,24 @@ adapters:
       model_repo_root: ""                                     # 留空 -> external_models/gr00tn1d7
 
   # ============================================================
+  # Isaac GR00T N1.7 explicit Kuavo path (diagnostics)
+  # ============================================================
+  groot_explicit:
+    adapter: isaac_gr00t_n17_explicit
+    env:
+      mode: uv
+      project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d7
+    args:
+      checkpoint: /path/to/gr00t/checkpoint
+      embodiment_tag: NEW_EMBODIMENT
+      which_arm: both
+      execution_horizon: 16
+      device: cuda
+      strict: true
+      model_repo_root: ""
+
+
+  # ============================================================
   # LingBot-VLA 
   # ============================================================
   lingbotvla:
