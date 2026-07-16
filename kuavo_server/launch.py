@@ -104,6 +104,18 @@ def wrap_with_env(cmd: list[str], env_block: dict[str, Any]) -> list[str]:
     sys.exit(f"[launch] unknown env.mode '{mode}' (expected uv|conda|none)")
 
 
+def apply_env_vars(env_block: dict[str, Any]) -> None:
+    """Apply optional per-adapter environment variables before exec."""
+    env_vars = (env_block or {}).get("vars") or {}
+    if not isinstance(env_vars, dict):
+        sys.exit("[launch] env.vars must be a mapping")
+
+    for key, raw in env_vars.items():
+        if raw is None:
+            continue
+        os.environ[str(key)] = str(expand(raw))
+
+
 def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         sys.exit(f"[launch] config not found: {path}")
@@ -171,7 +183,9 @@ def main() -> None:
         sys.exit(f"[launch] adapter '{ns.adapter}' not in config. Known: {adapters}")
 
     serve_cmd = build_serve_argv(ns.adapter, cfg, extra)
-    full_cmd = wrap_with_env(serve_cmd, block.get("env") or {})
+    env_block = block.get("env") or {}
+    apply_env_vars(env_block)
+    full_cmd = wrap_with_env(serve_cmd, env_block)
 
     print("[launch] cwd     :", REPO_ROOT)
     print("[launch] command :", " ".join(shlex.quote(c) for c in full_cmd))

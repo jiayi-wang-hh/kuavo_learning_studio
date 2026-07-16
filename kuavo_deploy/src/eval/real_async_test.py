@@ -205,12 +205,16 @@ def control_worker(
     stop_event: Event,
     max_steps: int,
     action_timeout: float,
+    success_event: Event | None = None,
 ) -> int:
     step = 0
     last_action = None
     try:
         with tqdm(total=max_steps, desc="Async episode", unit="step", leave=False) as pbar:
             while step < max_steps and not stop_event.is_set() and not rospy.is_shutdown():
+                if success_event is not None and success_event.is_set():
+                    stop_event.set()
+                    break
                 while pause_flag.is_set() and not stop_flag.is_set():
                     log_model.info("Paused. Waiting for resume signal...")
                     time.sleep(0.5)
@@ -230,6 +234,9 @@ def control_worker(
                 env.step(action)
                 last_action = action
                 step += 1
+                if success_event is not None and success_event.is_set():
+                    stop_event.set()
+                    break
                 pbar.update(1)
     except Exception:
         log_robot.error("Async control worker failed:\n" + traceback.format_exc())
@@ -296,7 +303,8 @@ def kuavo_eval_async(config: KuavoConfig, env) -> None:
         infer_thread.start()
 
         warmup_actions = max(1, int(cfg.async_warmup_actions))
-        if not buffer.wait_for_size(warmup_actions, timeout=cfg.async_action_timeout):
+        warmup_timeout = float(getattr(cfg, "async_warmup_timeout", cfg.async_action_timeout))
+        if not buffer.wait_for_size(warmup_actions, timeout=warmup_timeout):
             log_model.warning("Warmup action wait timed out; control loop will wait on the buffer.")
 
         steps = control_worker(
@@ -305,6 +313,7 @@ def kuavo_eval_async(config: KuavoConfig, env) -> None:
             stop_event=stop_event,
             max_steps=cfg.max_episode_steps,
             action_timeout=cfg.async_action_timeout,
+            success_event=None,
         )
         stop_event.set()
         infer_thread.join(timeout=2.0)

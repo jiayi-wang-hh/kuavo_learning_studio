@@ -200,7 +200,9 @@ class ConfigInference:
     async_buffer_size: int = 32
     async_low_watermark: int = 4
     async_warmup_actions: int = 1
+    async_warmup_timeout: float = 10.0
     async_action_timeout: float = 1.0
+    save_rollout_video: bool = False
     def validate(self):
         supported_policy_types = [
             "",
