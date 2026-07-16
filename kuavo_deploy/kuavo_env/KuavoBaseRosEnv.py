@@ -15,8 +15,12 @@ import gymnasium as gym
 import time
 import sys
 from kuavo_humanoid_sdk import KuavoSDK, KuavoRobot, KuavoRobotState, DexterousHand
-from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import lejuClawCommand
-from kuavo_humanoid_sdk.msg.kuavo_msgs.srv import (changeArmCtrlMode, changeArmCtrlModeRequest)
+try:
+    from kuavo_msgs.msg import lejuClawCommand
+    from kuavo_msgs.srv import changeArmCtrlMode, changeArmCtrlModeRequest
+except ImportError:
+    from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import lejuClawCommand
+    from kuavo_humanoid_sdk.msg.kuavo_msgs.srv import changeArmCtrlMode, changeArmCtrlModeRequest
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.utils.ros_manager import ROSManager
