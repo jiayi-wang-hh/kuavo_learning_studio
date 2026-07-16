@@ -20,18 +20,26 @@ This module provides the core policy classes for running Gr00t models:
 - Gr00tSimPolicyWrapper: Wrapper for compatibility with existing Gr00t simulation environments
 """
 
+import types
+import logging
+import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
+import torch.nn.functional as F
+from safetensors.torch import load_file
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
 
 from .policy import BasePolicy, PolicyWrapper
+
+
+logger = logging.getLogger(__name__)
 
 
 def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
@@ -58,6 +66,252 @@ def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
         return x
 
 
+def _rec_float_to_fp32(x: Any) -> Any:
+    """Recursively convert floating tensors in a nested structure to float32."""
+    if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
+        return x.float()
+    elif isinstance(x, dict) or hasattr(x, "items"):
+        return {k: _rec_float_to_fp32(v) for k, v in x.items()}  # type: ignore
+    elif isinstance(x, list):
+        return [_rec_float_to_fp32(v) for v in x]
+    else:
+        return x
+
+
+def _patch_lora_linear_forward(module: torch.nn.Module) -> int:
+    patched = 0
+    for child in module.modules():
+        base_layer = getattr(child, "base_layer", None)
+        lora_a = getattr(child, "lora_A", None)
+        lora_b = getattr(child, "lora_B", None)
+        if base_layer is None or lora_a is None or lora_b is None:
+            continue
+        if not hasattr(base_layer, "weight") or not hasattr(base_layer, "bias"):
+            continue
+
+        def safe_forward(self, x, *args, _base_layer=base_layer, _lora_a=lora_a, _lora_b=lora_b, **kwargs):
+            out = F.linear(x, _base_layer.weight, _base_layer.bias)
+            active_adapters = getattr(self, "active_adapters", [])
+            for adapter in active_adapters:
+                if adapter not in _lora_a or adapter not in _lora_b:
+                    continue
+                lora_out = _lora_b[adapter](_lora_a[adapter](x.to(_lora_a[adapter].weight.dtype)))
+                scaling = self.scaling[adapter] if isinstance(self.scaling, dict) else self.scaling
+                out = out + lora_out.to(out.dtype) * scaling
+            return out
+
+        child.forward = types.MethodType(safe_forward, child)
+        patched += 1
+    return patched
+
+
+def _require_finite_tensor(name: str, tensor: torch.Tensor) -> None:
+    if not torch.is_tensor(tensor) or not torch.is_floating_point(tensor):
+        return
+    finite = torch.isfinite(tensor)
+    if bool(finite.all().item()):
+        return
+    bad_count = int((~finite).sum().item())
+    finite_values = tensor[finite]
+    stats = ""
+    if finite_values.numel() > 0:
+        finite_values = finite_values.float()
+        stats = (
+            f", finite_min={float(finite_values.min().item()):.6g}, "
+            f"finite_max={float(finite_values.max().item()):.6g}, "
+            f"finite_abs_max={float(finite_values.abs().max().item()):.6g}"
+        )
+    raise FloatingPointError(
+        f"{name} contains NaN/Inf: shape={tuple(tensor.shape)}, "
+        f"dtype={tensor.dtype}, bad_count={bad_count}{stats}"
+    )
+
+
+def _restore_visual_from_checkpoint(visual: torch.nn.Module, model_dir: Path) -> int:
+    index_path = model_dir / "model.safetensors.index.json"
+    if not index_path.exists():
+        logger.warning("Skipped visual checkpoint restore: %s not found", index_path)
+        return 0
+
+    weight_map = json.loads(index_path.read_text())["weight_map"]
+    shard_cache = {}
+    restored = 0
+
+    with torch.no_grad():
+        for local_name, target in visual.state_dict().items():
+            checkpoint_name = f"backbone.model.model.visual.{local_name}"
+            shard_name = weight_map.get(checkpoint_name)
+            if shard_name is None:
+                continue
+            if shard_name not in shard_cache:
+                shard_cache[shard_name] = load_file(str(model_dir / shard_name), device="cpu")
+            source = shard_cache[shard_name][checkpoint_name].float()
+            _require_finite_tensor(f"visual_checkpoint.{checkpoint_name}", source)
+            target.copy_(source.to(device=target.device, dtype=target.dtype))
+            _require_finite_tensor(f"visual_restored.{local_name}", target)
+            restored += 1
+
+    logger.warning("Restored %d visual tensors from checkpoint in CPU fp32 path", restored)
+    return restored
+
+
+def _load_checkpoint_tensor(model_dir: Path, checkpoint_name: str) -> torch.Tensor | None:
+    index_path = model_dir / "model.safetensors.index.json"
+    if not index_path.exists():
+        return None
+    weight_map = json.loads(index_path.read_text())["weight_map"]
+    shard_name = weight_map.get(checkpoint_name)
+    if shard_name is None:
+        return None
+    tensors = load_file(str(model_dir / shard_name), device="cpu")
+    return tensors[checkpoint_name].float().contiguous()
+
+
+def _load_visual_lora_scaling(model_dir: Path) -> float:
+    config_path = model_dir / "config.json"
+    if not config_path.exists():
+        return 1.0
+    config = json.loads(config_path.read_text())
+    alpha = config.get("visual_lora_alpha", config.get("lora_alpha", 1))
+    rank = config.get("visual_lora_rank", config.get("lora_rank", 1))
+    return float(alpha) / float(rank)
+
+
+def _patch_checkpoint_linear_cpu_forward(
+    module: torch.nn.Module,
+    model_dir: Path,
+    checkpoint_prefix: str,
+    log_name: str,
+) -> None:
+    base_layer = getattr(module, "base_layer", module)
+    if not hasattr(base_layer, "weight"):
+        logger.warning(
+            "Skipped %s CPU patch: module has no weight (%s)",
+            log_name,
+            type(module).__name__,
+        )
+        return
+
+    weight_cpu = _load_checkpoint_tensor(model_dir, f"{checkpoint_prefix}.base_layer.weight")
+    if weight_cpu is None:
+        weight_cpu = base_layer.weight.detach().float().cpu().contiguous()
+    bias_cpu = _load_checkpoint_tensor(model_dir, f"{checkpoint_prefix}.base_layer.bias")
+    if bias_cpu is None:
+        bias = getattr(base_layer, "bias", None)
+        bias_cpu = None if bias is None else bias.detach().float().cpu().contiguous()
+    lora_a = getattr(module, "lora_A", None)
+    lora_b = getattr(module, "lora_B", None)
+    lora_a_cpu = _load_checkpoint_tensor(model_dir, f"{checkpoint_prefix}.lora_A.default.weight")
+    lora_b_cpu = _load_checkpoint_tensor(model_dir, f"{checkpoint_prefix}.lora_B.default.weight")
+    scaling_attr = getattr(module, "scaling", None)
+    if isinstance(scaling_attr, dict):
+        lora_scaling = scaling_attr.get("default", _load_visual_lora_scaling(model_dir))
+    elif scaling_attr is not None:
+        lora_scaling = scaling_attr
+    else:
+        lora_scaling = _load_visual_lora_scaling(model_dir)
+
+    _require_finite_tensor(f"{log_name}.cpu_patch.weight", weight_cpu)
+    if bias_cpu is not None:
+        _require_finite_tensor(f"{log_name}.cpu_patch.bias", bias_cpu)
+
+    def cpu_forward(self, x, *args, **kwargs):
+        _require_finite_tensor(f"{log_name}.cpu_patch.input", x)
+        x_cpu = x.detach().float().cpu()
+        out = F.linear(x_cpu, weight_cpu, bias_cpu)
+        active_adapters = getattr(self, "active_adapters", [])
+        if lora_a_cpu is not None and lora_b_cpu is not None:
+            out = out + F.linear(F.linear(x_cpu, lora_a_cpu), lora_b_cpu) * lora_scaling
+        elif lora_a is not None and lora_b is not None:
+            for adapter in active_adapters:
+                if adapter not in lora_a or adapter not in lora_b:
+                    continue
+                adapter_out = lora_b[adapter].cpu().float()(lora_a[adapter].cpu().float()(x_cpu))
+                scaling = self.scaling[adapter] if isinstance(self.scaling, dict) else self.scaling
+                out = out + adapter_out * scaling
+        _require_finite_tensor(f"{log_name}.cpu_patch.output", out)
+        return out.to(device=x.device, dtype=x.dtype)
+
+    module.forward = types.MethodType(cpu_forward, module)
+    logger.warning(
+        "Patched %s to CPU fp32 forward (%s -> %s)",
+        log_name,
+        type(module).__name__,
+        type(base_layer).__name__,
+    )
+
+
+def _patch_visual_attention_cpu_forwards(visual: torch.nn.Module, model_dir: Path) -> None:
+    blocks = getattr(visual, "blocks", None)
+    if not blocks:
+        logger.warning("Skipped visual attention CPU patch: no visual blocks")
+        return
+    patched = 0
+    for idx, block in enumerate(blocks):
+        attn = getattr(block, "attn", None)
+        if attn is None:
+            continue
+        qkv = getattr(attn, "qkv", None)
+        if qkv is not None:
+            _patch_checkpoint_linear_cpu_forward(
+                qkv,
+                model_dir,
+                f"backbone.model.model.visual.blocks.{idx}.attn.qkv",
+                f"visual.blocks[{idx}].attn.qkv",
+            )
+            patched += 1
+        proj = getattr(attn, "proj", None)
+        if proj is not None:
+            _patch_checkpoint_linear_cpu_forward(
+                proj,
+                model_dir,
+                f"backbone.model.model.visual.blocks.{idx}.attn.proj",
+                f"visual.blocks[{idx}].attn.proj",
+            )
+            patched += 1
+    logger.warning("Patched %d visual attention linear modules to CPU fp32 forward", patched)
+
+
+# Backward-compatible alias for older local imports during iterative debugging.
+_patch_first_visual_attention_cpu_forwards = _patch_visual_attention_cpu_forwards
+
+
+def _patch_qwen_image_feature_output_dtype(qwen_model: torch.nn.Module) -> None:
+    core_model = getattr(qwen_model, "model", qwen_model)
+    get_image_features = getattr(core_model, "get_image_features", None)
+    if get_image_features is None:
+        logger.warning("Skipped Qwen image feature dtype patch: get_image_features not found")
+        return
+
+    def cast_tree(value, *, dtype: torch.dtype, device: torch.device):
+        if torch.is_tensor(value) and torch.is_floating_point(value):
+            return value.to(device=device, dtype=dtype)
+        if isinstance(value, tuple):
+            return tuple(cast_tree(item, dtype=dtype, device=device) for item in value)
+        if isinstance(value, list):
+            return [cast_tree(item, dtype=dtype, device=device) for item in value]
+        return value
+
+    def patched_get_image_features(self, pixel_values, image_grid_thw=None, **kwargs):
+        output = get_image_features(pixel_values, image_grid_thw, **kwargs)
+        embedding_weight = self.get_input_embeddings().weight
+        target_dtype = embedding_weight.dtype
+        target_device = embedding_weight.device
+        if isinstance(output, tuple):
+            return cast_tree(output, dtype=target_dtype, device=target_device)
+        output.pooler_output = cast_tree(output.pooler_output, dtype=target_dtype, device=target_device)
+        if getattr(output, "deepstack_features", None) is not None:
+            output.deepstack_features = cast_tree(
+                output.deepstack_features,
+                dtype=target_dtype,
+                device=target_device,
+            )
+        return output
+
+    core_model.get_image_features = types.MethodType(patched_get_image_features, core_model)
+    logger.warning("Patched Qwen image feature outputs to language embedding dtype")
+
+
 class Gr00tPolicy(BasePolicy):
     """Core policy class for Gr00t model inference.
 
@@ -78,6 +332,11 @@ class Gr00tPolicy(BasePolicy):
         *,
         device: int | str,
         strict: bool = True,
+        use_bf16: bool = True,
+        use_fp16: bool = False,
+        action_head_fp32: bool = False,
+        disable_flash_attention: bool = False,
+        visual_fp32: bool = False,
     ):
         """Initialize the Gr00t Policy.
 
@@ -87,6 +346,11 @@ class Gr00tPolicy(BasePolicy):
             model_path: Path to the pretrained model checkpoint directory
             device: Device to run the model on (e.g., 'cuda:0', 0, 'cpu')
             strict: Whether to enforce strict input validation (default: True)
+            use_bf16: Whether to move model weights to bfloat16 for inference.
+            use_fp16: Whether to move model weights to float16 for inference.
+            action_head_fp32: Whether to keep the action head and diffusion sampling in fp32.
+            disable_flash_attention: Whether to disable flash attention in the backbone.
+            visual_fp32: Whether to keep only the vision encoder in fp32.
         """
         # Import this to register all models.
         import gr00t.model  # noqa: F401
@@ -96,10 +360,39 @@ class Gr00tPolicy(BasePolicy):
             embodiment_tag = EmbodimentTag.resolve(embodiment_tag)
         model_dir = Path(model_path)
 
-        # Load the pretrained model and move to target device with bfloat16 precision
-        model = AutoModel.from_pretrained(model_dir)
+        # Load the pretrained model and move to target device with bfloat16 precision.
+        model_config = AutoConfig.from_pretrained(model_dir)
+        if disable_flash_attention and hasattr(model_config, "use_flash_attention"):
+            model_config.use_flash_attention = False
+            model_config._attn_implementation = "eager"
+        if (use_fp16 or not use_bf16) and hasattr(model_config, "load_bf16"):
+            model_config.load_bf16 = False
+        loading_kwargs = {"attn_implementation": "eager"} if disable_flash_attention else {}
+        model = AutoModel.from_pretrained(model_dir, config=model_config, **loading_kwargs)
         model.eval()  # Set model to evaluation mode
-        model.to(device=device, dtype=torch.bfloat16)
+        if use_fp16:
+            inference_dtype = torch.float16
+        elif use_bf16:
+            inference_dtype = torch.bfloat16
+        else:
+            inference_dtype = torch.float32
+        self.inference_dtype = inference_dtype
+        model.to(device=device, dtype=inference_dtype)
+        if visual_fp32:
+            backbone = getattr(model, "backbone", None)
+            qwen_model = getattr(backbone, "model", None)
+            visual = getattr(qwen_model, "visual", None)
+            if visual is None:
+                raise AttributeError("visual_fp32 requested but Qwen visual encoder was not found")
+            visual.to(device=device, dtype=torch.float32)
+            _restore_visual_from_checkpoint(visual, model_dir)
+            _patch_lora_linear_forward(visual)
+            _patch_visual_attention_cpu_forwards(visual, model_dir)
+            _patch_qwen_image_feature_output_dtype(qwen_model)
+            backbone.force_visual_fp32 = True
+        if action_head_fp32 and hasattr(model, "action_head"):
+            model.action_head.to(device=device, dtype=torch.float32)
+            model.force_action_head_fp32 = True
         self.model = model
 
         # Load the processor for input/output transformation.
@@ -401,7 +694,7 @@ class Gr00tPolicy(BasePolicy):
 
         # Step 3: Collate processed inputs into a single batch for model
         collated_inputs = self.collate_fn(processed_inputs)
-        collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
+        collated_inputs = _rec_to_dtype(collated_inputs, dtype=self.inference_dtype)
 
         # Step 4: Run model inference to predict actions
         with torch.inference_mode():

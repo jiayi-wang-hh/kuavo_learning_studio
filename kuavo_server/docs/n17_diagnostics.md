@@ -116,7 +116,51 @@ to repeated `select_action_chunk` calls and reports action-side metrics. The raw
 observation in the top-level report is shared by all servers, preventing branch
 configuration differences from contaminating the comparison.
 
-## 4. Interpret the result
+## 4. Isolate and mitigate N1.7 NaN output
+
+The VLM/action LoRA branch localized the observed final `action.left_arm` NaN
+to an earlier mixed-precision failure in the Qwen3 visual backbone. The unsafe
+combination is the default BF16 inference path, Flash Attention, and visual LoRA
+layers. The action composer only exposes the already-invalid policy output; it
+does not create the NaN.
+
+This branch now reports the first non-finite backbone/action-head tensor and the
+active dtypes under `precision`. Test the least invasive workaround first:
+
+```bash
+python kuavo_server/launch.py groot_explicit \
+  --checkpoint /path/to/n1d7/checkpoint \
+  --port 5557 \
+  --use_fp16 \
+  --disable_flash_attention
+```
+
+If the error still names `qwen3_backbone.visual`, add the visual FP32 fallback:
+
+```bash
+python kuavo_server/launch.py groot_explicit \
+  --checkpoint /path/to/n1d7/checkpoint \
+  --port 5557 \
+  --use_fp16 \
+  --disable_flash_attention \
+  --visual_fp32
+```
+
+`--visual_fp32` restores visual checkpoint tensors through CPU FP32 and runs
+visual attention linear layers through the safe FP32 path, so it is slower and
+should be used only if FP16 plus eager attention is insufficient. If the first
+failure is under `action_head` while all backbone tensors are finite, add
+`--action_head_fp32` instead. Full `--use_fp32` is the final high-VRAM fallback;
+do not combine it with `--use_fp16`.
+
+After restarting the server, rerun `diagnose.py`. Check:
+
+- `actions.status`: should become `ok`;
+- `actions.errors[*].message`: identifies the first non-finite tensor;
+- `precision`: confirms model, visual, and action-head dtypes;
+- `processor.groups[*].normalized.finite`: must remain `true`.
+
+## 5. Interpret the result
 
 - Baseline and explicit N1.7 actions differ: the old adapter's heuristic mapping
   changed the model input or action output.

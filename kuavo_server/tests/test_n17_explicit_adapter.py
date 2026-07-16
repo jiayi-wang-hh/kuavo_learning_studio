@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 from types import SimpleNamespace
 import unittest
 
@@ -49,6 +50,39 @@ class TestIsaacGr00tN17ExplicitAdapter(unittest.TestCase):
             action_dims={"left_arm": 7, "left_gripper": 1, "right_arm": 7, "right_gripper": 1},
         )
         self.adapter._validate_checkpoint_contract()
+
+    def test_precision_flags_are_exposed_by_explicit_adapter(self):
+        parser = ArgumentParser()
+        IsaacGr00tN17ExplicitAdapter.add_cli_args(parser)
+        args = parser.parse_args(
+            [
+                "--checkpoint",
+                "/tmp/checkpoint",
+                "--use_fp16",
+                "--disable_flash_attention",
+                "--visual_fp32",
+            ]
+        )
+        self.assertTrue(args.use_fp16)
+        self.assertTrue(args.disable_flash_attention)
+        self.assertTrue(args.visual_fp32)
+
+    def test_fp16_and_fp32_are_mutually_exclusive(self):
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            IsaacGr00tN17ExplicitAdapter(
+                model_repo_root="",
+                checkpoint="/tmp/checkpoint",
+                embodiment_tag="NEW_EMBODIMENT",
+                which_arm="both",
+                execution_horizon=16,
+                device="cuda",
+                strict=True,
+                use_fp32=True,
+                use_fp16=True,
+                action_head_fp32=False,
+                disable_flash_attention=False,
+                visual_fp32=False,
+            )
 
 
 if __name__ == "__main__":

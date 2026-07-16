@@ -102,6 +102,37 @@ def _lora_diagnostics(adapter: Any) -> dict[str, Any]:
     }
 
 
+def _module_dtype(module: Any) -> str | None:
+    if module is None:
+        return None
+    for parameter in module.parameters():
+        if parameter.is_floating_point():
+            return str(parameter.dtype)
+    return None
+
+
+def _precision_diagnostics(adapter: Any) -> dict[str, Any]:
+    model = adapter.model.policy.model
+    backbone = getattr(model, "backbone", None)
+    qwen_model = getattr(backbone, "model", None)
+    visual = getattr(qwen_model, "visual", None)
+    action_head = getattr(model, "action_head", None)
+    config = getattr(model, "config", None)
+    return {
+        "policy_input_dtype": str(
+            getattr(adapter.model.policy, "inference_dtype", "unknown")
+        ),
+        "model_dtype": _module_dtype(model),
+        "visual_dtype": _module_dtype(visual),
+        "action_head_dtype": _module_dtype(action_head),
+        "force_visual_fp32": bool(getattr(backbone, "force_visual_fp32", False)),
+        "force_action_head_fp32": bool(
+            getattr(model, "force_action_head_fp32", False)
+        ),
+        "use_flash_attention": getattr(config, "use_flash_attention", None),
+        "attention_implementation": getattr(config, "_attn_implementation", None),
+    }
+
 def _action_dict_summary(action_dict: dict[str, Any]) -> dict[str, Any]:
     groups: dict[str, Any] = {}
     for key, value in action_dict.items():
@@ -277,6 +308,7 @@ def diagnose_n17_observation(adapter: Any, request: dict[str, Any]) -> dict[str,
         "processor": _processor_diagnostics(adapter, model_obs),
         "action_config": _json_value(adapter.model.modality["action"].action_configs),
         "lora": _lora_diagnostics(adapter),
+        "precision": _precision_diagnostics(adapter),
         "actions": _action_metrics(
             adapter,
             raw_state16,
