@@ -36,8 +36,16 @@ def _to_numpy(x: Any) -> np.ndarray:
     return np.asarray(x)
 
 
+def _require_finite(name: str, arr: Any) -> np.ndarray:
+    out = _to_numpy(arr)
+    if not np.isfinite(out).all():
+        bad_count = int((~np.isfinite(out)).sum())
+        raise ValueError(f"{name} contains NaN/Inf: shape={out.shape}, bad_count={bad_count}")
+    return out
+
+
 def _as_hwc_uint8(img: Any) -> np.ndarray:
-    arr = _to_numpy(img)
+    arr = _require_finite("observation image", img)
     if arr.ndim == 4 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.ndim == 3 and arr.shape[0] in (1, 3) and arr.shape[-1] not in (1, 3):
@@ -70,7 +78,7 @@ def _fit_dim(vec: np.ndarray, dim: int, fill: float = 0.0) -> np.ndarray:
 
 
 def _kuavo_state16(raw_state: Any, which_arm: str) -> np.ndarray:
-    state = _to_numpy(raw_state).astype(np.float32).reshape(-1)
+    state = _require_finite("observation.state", raw_state).astype(np.float32).reshape(-1)
     if state.shape[0] == 16:
         return state
     if state.shape[0] == 14:
@@ -127,6 +135,11 @@ class _Gr00tRuntime:
         embodiment_tag_raw: str,
         device: str,
         strict: bool,
+        use_fp32: bool,
+        use_fp16: bool,
+        action_head_fp32: bool,
+        disable_flash_attention: bool,
+        visual_fp32: bool,
     ) -> None:
         _ensure_repo_import_paths(repo_root)
         from gr00t.data.embodiment_tags import EmbodimentTag
@@ -138,6 +151,11 @@ class _Gr00tRuntime:
             model_path=str(model_path),
             device=device,
             strict=strict,
+            use_bf16=not use_fp32 and not use_fp16,
+            use_fp16=use_fp16,
+            action_head_fp32=action_head_fp32,
+            disable_flash_attention=disable_flash_attention,
+            visual_fp32=visual_fp32,
         )
         self.embodiment_value = tag.value
         self.modality = self.policy.get_modality_config()
@@ -193,6 +211,11 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         execution_horizon: int | None,
         device: str,
         strict: bool,
+        use_fp32: bool,
+        use_fp16: bool,
+        action_head_fp32: bool,
+        disable_flash_attention: bool,
+        visual_fp32: bool,
     ) -> None:
         self.model_repo_root = _resolve_repo_root(model_repo_root)
         self.checkpoint = Path(checkpoint).expanduser().resolve()
@@ -214,6 +237,11 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             embodiment_tag_raw=embodiment_tag,
             device=device,
             strict=strict,
+            use_fp32=use_fp32,
+            use_fp16=use_fp16,
+            action_head_fp32=action_head_fp32,
+            disable_flash_attention=disable_flash_attention,
+            visual_fp32=visual_fp32,
         )
         print(
             f"[isaac-gr00t-n17] embodiment={self.model.embodiment_value} "
@@ -246,6 +274,11 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         parser.add_argument("--execution_horizon", type=int, default=16, help="Number of actions to execute per chunk (receding horizon). Defaults to full model prediction.")
         parser.add_argument("--device", type=str, default="cuda", help="Torch device passed to Gr00tPolicy")
         parser.add_argument("--strict", action="store_true", help="Enable strict input/output checks in Gr00tPolicy")
+        parser.add_argument("--use_fp32", action="store_true", help="Run Gr00tPolicy in fp32 instead of bf16")
+        parser.add_argument("--use_fp16", action="store_true", help="Run Gr00tPolicy in fp16 instead of bf16")
+        parser.add_argument("--action_head_fp32", action="store_true", help="Keep only the action head and diffusion sampling in fp32")
+        parser.add_argument("--disable_flash_attention", action="store_true", help="Disable flash attention in the Qwen/Cosmos backbone")
+        parser.add_argument("--visual_fp32", action="store_true", help="Keep only the Qwen/Cosmos vision encoder in fp32")
 
     @classmethod
     def from_args(cls, args: Namespace) -> "IsaacGr00tN17Adapter":
@@ -257,6 +290,11 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             execution_horizon=args.execution_horizon,
             device=args.device,
             strict=args.strict,
+            use_fp32=args.use_fp32,
+            use_fp16=args.use_fp16,
+            action_head_fp32=args.action_head_fp32,
+            disable_flash_attention=args.disable_flash_attention,
+            visual_fp32=args.visual_fp32,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -322,6 +360,7 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         for key in self.model.state_keys:
             state_dim = self.model.state_dims[key]
             vec = self._state_for_key(key, state_dim, kuavo_state16)
+            _require_finite(f"model state[{key}]", vec)
             state[key] = vec[None, None, ...].astype(np.float32)
 
         language = {self.model.language_key: [[prompt]]}
@@ -451,6 +490,7 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
 
         first_key = self.model.action_keys[0]
         base = _to_numpy(action_dict[first_key])
+        _require_finite(f"raw action[{first_key}]", base)
         if base.ndim != 3 or base.shape[0] != 1:
             raise ValueError(
                 f"Expected action[{first_key}] shape [1, T, D], got {base.shape}"
@@ -459,10 +499,12 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         chunk: list[np.ndarray] = []
         for t in range(horizon):
             step = {
-                key: _to_numpy(action_dict[key])[0, t]
+                key: _require_finite(f"raw action[{key}]", action_dict[key])[0, t]
                 for key in self.model.action_keys
             }
-            chunk.append(self._compose_kuavo_action(step))
+            action = self._compose_kuavo_action(step)
+            _require_finite(f"converted action step {t}", action)
+            chunk.append(action)
         return chunk
 
     def select_action(self, obs: dict[str, Any]) -> np.ndarray:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Callable, Type
@@ -88,8 +89,9 @@ class BaseInferenceServer:
                 )
                 self.socket.send(TorchSerializer.to_bytes(result))
             except Exception as exc:
-                print(f"Error in server: {exc}")
-                self.socket.send(TorchSerializer.to_bytes({"error": str(exc)}))
+                tb = traceback.format_exc()
+                print(f"Error in server: {exc}\n{tb}")
+                self.socket.send(TorchSerializer.to_bytes({"error": f"{exc}\n{tb}"}))
 
 
 class ModelInferenceServer(BaseInferenceServer):

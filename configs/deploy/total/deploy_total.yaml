@@ -57,4 +57,6 @@ inference:  # 推理和评测设置。
   async_buffer_size: 50  # action 队列最大长度。
   async_low_watermark: 3  # 队列剩余动作数小于等于该值时触发下一次 chunk 推理。
   async_warmup_actions: 1  # 启动控制线程前至少等待的动作数量。
+  async_warmup_timeout: 10.0  # 等待首批 action chunk 的最长时间。
   async_action_timeout: 1.0  # 控制线程等待新动作的最长时间，超时后停止。
+  save_rollout_video: false  # 是否保存 rollout 视频；关闭可避免每步写图拖慢控制频率。

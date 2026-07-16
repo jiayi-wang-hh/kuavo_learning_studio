@@ -259,6 +259,12 @@ class PolicyClient:
 
         if tensor.ndim == 1:
             tensor = tensor.unsqueeze(0)
+        if not torch.isfinite(tensor).all():
+            bad_count = int((~torch.isfinite(tensor)).sum().item())
+            raise ValueError(
+                f"Policy server returned non-finite action values: "
+                f"shape={tuple(tensor.shape)}, bad_count={bad_count}, action={tensor}"
+            )
         return tensor
 
     @staticmethod

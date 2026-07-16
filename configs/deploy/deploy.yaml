@@ -17,3 +17,11 @@ inference:  # 推理和评测设置
   max_episode_steps: 200  # 每条最多跑多少步
 
   task_prompt: "robot manipulation"
+  async_inference: true  # 使用异步 chunk 推理 + 固定频率控制
+  async_control_hz: 10.0  # 异步控制线程频率，0 表示使用 env.ros_rate
+  async_buffer_size: 48
+  async_low_watermark: 16
+  async_warmup_actions: 16
+  async_warmup_timeout: 10.0
+  async_action_timeout: 0.02
+  save_rollout_video: false  # 关闭逐帧写图，避免拖慢控制循环

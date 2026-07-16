@@ -25,6 +25,7 @@ from transformers.feature_extraction_utils import BatchFeature
 import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
+from gr00t.model.lora import freeze_non_lora_parameters, inject_lora_adapter
 from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
@@ -33,6 +34,21 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _require_finite_tensor(name: str, tensor: torch.Tensor) -> None:
+    if not torch.is_tensor(tensor) or not torch.is_floating_point(tensor):
+        return
+
+    finite = torch.isfinite(tensor)
+    if bool(finite.all().item()):
+        return
+
+    bad_count = int((~finite).sum().item())
+    raise FloatingPointError(
+        f"{name} contains NaN/Inf: shape={tuple(tensor.shape)}, "
+        f"dtype={tensor.dtype}, bad_count={bad_count}"
+    )
 
 
 class Gr00tN1d7ActionHead(nn.Module):
@@ -153,6 +169,9 @@ class Gr00tN1d7ActionHead(nn.Module):
                 self.vlln.eval()
                 self.vl_self_attention.eval()
 
+    def _action_head_dtype(self) -> torch.dtype:
+        return next(self.parameters()).dtype
+
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
         sample = (1 - sample) * self.config.noise_s
@@ -160,8 +179,11 @@ class Gr00tN1d7ActionHead(nn.Module):
 
     def process_backbone_output(self, backbone_output: BatchFeature) -> BatchFeature:
         backbone_features = backbone_output["backbone_features"]
+        _require_finite_tensor("action_head.backbone_features.before_vlln", backbone_features)
         backbone_features = self.vlln(backbone_features)
+        _require_finite_tensor("action_head.backbone_features.after_vlln", backbone_features)
         backbone_features = self.vl_self_attention(backbone_features)
+        _require_finite_tensor("action_head.backbone_features.after_vl_self_attention", backbone_features)
         backbone_output["backbone_features"] = backbone_features
         return backbone_output
 
@@ -198,6 +220,7 @@ class Gr00tN1d7ActionHead(nn.Module):
         # Handle state history
         assert action_input.state.shape[1] == self.config.state_history_length
         action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
+        action_input.state = action_input.state.to(dtype=self._action_head_dtype())
 
         # Embed state.
         state_features = self.state_encoder(action_input.state, embodiment_id)
@@ -298,13 +321,16 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         # Handle state history: if we have fewer timesteps than expected, repeat to fill
         state = action_input.state
+        _require_finite_tensor("action_head.state.input", state)
         current_T = state.shape[1]
         assert current_T == self.config.state_history_length, "current_T != state_history_length"
         # Reshape state from [B, state_history_length, max_state_dim] to [B, 1, state_history_length * max_state_dim]
         state = state.view(state.shape[0], 1, -1)
+        state = state.to(dtype=self._action_head_dtype())
 
         # Embed state.
         state_features = self.state_encoder(state, embodiment_id)
+        _require_finite_tensor("action_head.state_features", state_features)
 
         return BatchFeature(data={"backbone_features": vl_embeds, "state_features": state_features})
 
@@ -337,6 +363,7 @@ class Gr00tN1d7ActionHead(nn.Module):
             dtype=vl_embeds.dtype,
             device=device,
         )
+        _require_finite_tensor("action_head.actions.initial_noise", actions)
 
         dt = 1.0 / self.num_inference_timesteps
         vel_strength = torch.ones_like(actions)
@@ -389,14 +416,17 @@ class Gr00tN1d7ActionHead(nn.Module):
                 size=(batch_size,), fill_value=t_discretized, device=device
             )
             action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
+            _require_finite_tensor(f"action_head.action_features.step_{t}", action_features)
             # Add position embedding.
             if self.config.add_pos_embed:
                 pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
+                _require_finite_tensor(f"action_head.action_features_with_pos.step_{t}", action_features)
 
             # Join vision, language, state and action embedding along sequence dimension.
             sa_embs = torch.cat((state_features, action_features), dim=1)
+            _require_finite_tensor(f"action_head.sa_embs.step_{t}", sa_embs)
 
             # Run model forward.
             if self.config.use_alternate_vl_dit:
@@ -413,12 +443,16 @@ class Gr00tN1d7ActionHead(nn.Module):
                     encoder_hidden_states=vl_embeds,
                     timestep=timesteps_tensor,
                 )
+            _require_finite_tensor(f"action_head.model_output.step_{t}", model_output)
             pred = self.action_decoder(model_output, embodiment_id)
+            _require_finite_tensor(f"action_head.pred.step_{t}", pred)
 
             pred_velocity = pred[:, -self.action_horizon :]
+            _require_finite_tensor(f"action_head.pred_velocity.step_{t}", pred_velocity)
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity * vel_strength
+            _require_finite_tensor(f"action_head.actions.after_update.step_{t}", actions)
 
         return BatchFeature(
             data={
@@ -511,6 +545,9 @@ class Gr00tN1d7(PreTrainedModel):
         """
         super().__init__(config)
         self.config = config
+        transformers_loading_kwargs = dict(transformers_loading_kwargs)
+        if not config.use_flash_attention and "attn_implementation" not in transformers_loading_kwargs:
+            transformers_loading_kwargs["attn_implementation"] = "eager"
 
         backbone_cls = get_backbone_cls(config)
         self.backbone = backbone_cls(
@@ -534,6 +571,47 @@ class Gr00tN1d7(PreTrainedModel):
             model_name=config.model_name,
             model_type=config.backbone_model_type,
             transformers_loading_kwargs=transformers_loading_kwargs,
+        )
+        self._maybe_setup_lora()
+
+    def _maybe_setup_lora(self):
+        """Inject LoRA adapters for VLM/action expert training when enabled.
+
+        This keeps the base GR00T weights frozen and leaves only adapter weights
+        trainable, so enabling LoRA does not accidentally fall back to full
+        finetuning of the backbone, projector, or action expert.
+        """
+        if not self.config.use_lora:
+            return
+
+        if self.config.lora_vlm:
+            self.backbone.model = inject_lora_adapter(
+                module=self.backbone.model,
+                target_modules=self.config.lora_vlm_target_modules,
+                rank=self.config.lora_rank,
+                alpha=self.config.lora_alpha,
+                dropout=self.config.lora_dropout,
+                adapter_name="vlm",
+            )
+
+        if self.config.lora_action_expert:
+            self.action_head.model = inject_lora_adapter(
+                module=self.action_head.model,
+                target_modules=self.config.lora_action_expert_target_modules,
+                rank=self.config.lora_rank,
+                alpha=self.config.lora_alpha,
+                dropout=self.config.lora_dropout,
+                adapter_name="action_expert",
+            )
+
+        freeze_non_lora_parameters(self)
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        logger.info(
+            "LoRA-only training enabled: trainable parameters: %s / %s (%.2f%%)",
+            f"{trainable_params:,}",
+            f"{total_params:,}",
+            100 * trainable_params / total_params,
         )
 
     def prepare_input(self, inputs: dict) -> Tuple[BatchFeature, BatchFeature]:
@@ -595,6 +673,14 @@ class Gr00tN1d7(PreTrainedModel):
 
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
+        if getattr(self, "force_action_head_fp32", False):
+            def to_fp32(x):
+                if torch.is_tensor(x) and torch.is_floating_point(x):
+                    return x.float()
+                return x
+
+            backbone_outputs = tree.map_structure(to_fp32, backbone_outputs)
+            action_inputs = tree.map_structure(to_fp32, action_inputs)
         action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
 
         return action_outputs

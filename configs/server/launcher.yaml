@@ -48,13 +48,20 @@ adapters:
     env:
       mode: uv
       project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d7
+      vars:
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     args:
-      checkpoint: /path/to/gr00t/checkpoint                   # 必填
+      checkpoint: /home/yuan/yuan_meng_kuavo/jiayi/kuavo_learning_studio/outputs/groot_n17_diffusion_vision_lora/checkpoint-60000                   # 必填
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
       execution_horizon: 16                                   # receding horizon chunk size
       device: cuda
       strict: false                                           # true 时开启严格 IO 检查
+      use_fp32: false                                         # true 时全模型 fp32，显存占用很高
+      use_fp16: true                                          # true 时用 fp16，显存接近 bf16，用于规避 bf16 backbone NaN
+      action_head_fp32: false                                 # 仅 action head/扩散采样 fp32，用于排查 bf16 NaN，显存占用较低
+      disable_flash_attention: true                           # 禁用 flash-attn，规避 bf16 backbone NaN
+      visual_fp32: true                                       # 仅视觉编码器 fp32，规避图像 token 在 hidden_states[0] NaN
       model_repo_root: ""                                     # 留空 -> external_models/gr00tn1d7
 
   # ============================================================

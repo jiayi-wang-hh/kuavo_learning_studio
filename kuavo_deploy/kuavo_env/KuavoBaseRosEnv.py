@@ -79,15 +79,17 @@ class KuavoBaseRosEnv(gym.Env):
         self.arm_state_keys = config_kuavo_env.arm_state_keys # observation.state 的key顺序
         self.ratio = config_kuavo_env.ratio
         self.frame_alignment = config_kuavo_env.frame_alignment
-        if self.direct_to_wbc:
-            self.last_predicted_action = None
-            self.is_first_step = True
-            self.low_pass_filter = LowPassFilter(cutoff_hz=1.0, dt=1.0 / self.control_rate_hz)
+        self.last_predicted_action = None
+        self.is_first_step = True
+        self.low_pass_filter = None
+        if self.enable_action_interpolation:
             log_robot.info(
-                f"Direct-to-WBC action interpolation: enabled={self.enable_action_interpolation}, "
+                f"Action interpolation: direct_to_wbc={self.direct_to_wbc}, "
                 f"inference_rate={self.ros_rate}Hz, control_rate={self.control_rate_hz}Hz, "
                 f"interpolation_steps={self.interpolation_steps}"
             )
+        if self.direct_to_wbc:
+            self.low_pass_filter = LowPassFilter(cutoff_hz=1.0, dt=1.0 / self.control_rate_hz)
 
     def _set_observation_space(self):
         limits = self.limits
@@ -249,10 +251,11 @@ class KuavoBaseRosEnv(gym.Env):
         self.sleep_time = 0
         self.average_sleep_time = 0
 
-        if self.direct_to_wbc:
+        if self.enable_action_interpolation:
             self.last_predicted_action = None
-            self.low_pass_filter.reset()
             self.is_first_step = True
+        if self.low_pass_filter is not None:
+            self.low_pass_filter.reset()
         return obs, {}
 
     # ==========================================================
@@ -395,6 +398,8 @@ class KuavoBaseRosEnv(gym.Env):
         if mode == 'default':  # 比较 action_space
             if len(action) != len(self.action_space.low):
                 raise ValueError(f"action shape must be {len(self.action_space.low)}")
+            if not np.isfinite(action).all():
+                raise ValueError(f"action contains NaN/Inf, refusing to execute: {action}")
             if np.any(action < self.action_space.low) or np.any(action > self.action_space.high):
                 log_robot.warning(
                     f"action out of range, action: {action}, "
@@ -404,6 +409,60 @@ class KuavoBaseRosEnv(gym.Env):
             return action
 
         raise ValueError(f"Unsupported mode: {mode}")
+
+    def _current_action_like(self, action):
+        current_action = np.asarray(action, dtype=float).copy()
+        joint_q = np.asarray(self.arm_state.get("joint_q", []), dtype=float)
+        gripper = np.asarray(self.arm_state.get("gripper", []), dtype=float)
+
+        if self.which_arm == 'both':
+            if len(joint_q) >= 14:
+                current_action[:7] = joint_q[:7]
+                current_action[8:15] = joint_q[7:14]
+            if len(gripper) >= 2:
+                current_action[7] = gripper[0]
+                current_action[15] = gripper[1]
+        elif self.which_arm == 'left':
+            if len(joint_q) >= 7:
+                current_action[:7] = joint_q[:7]
+            if len(gripper) >= 1:
+                current_action[7] = gripper[0]
+        elif self.which_arm == 'right':
+            if len(joint_q) >= 7:
+                current_action[:7] = joint_q[:7]
+            if len(gripper) >= 1:
+                current_action[7] = gripper[-1]
+        else:
+            raise KeyError(f"Unsupported which_arm: {self.which_arm}")
+
+        return current_action
+
+    def _lock_gripper_targets(self, interpolated_action, target_action):
+        if self.which_arm == 'both':
+            interpolated_action[7] = target_action[7]
+            interpolated_action[15] = target_action[15]
+        elif self.which_arm in ['left', 'right']:
+            interpolated_action[7] = target_action[7]
+        else:
+            raise KeyError(f"Unsupported which_arm: {self.which_arm}")
+        return interpolated_action
+
+    def _exec_interpolated_action(self, action):
+        target_action = np.asarray(action, dtype=float)
+        if self.is_first_step or self.last_predicted_action is None:
+            start_action = self._current_action_like(target_action)
+            self.is_first_step = False
+        else:
+            start_action = np.asarray(self.last_predicted_action, dtype=float)
+
+        for i in range(self.interpolation_steps):
+            alpha = (i + 1) / self.interpolation_steps
+            inter_action = (1 - alpha) * start_action + alpha * target_action
+            inter_action = self._lock_gripper_targets(inter_action, target_action)
+            self.exec_action(inter_action)
+            self.control_rate.sleep()
+
+        self.last_predicted_action = target_action.copy()
 
     def step(self, action):
         t0 = time.time()
@@ -447,8 +506,11 @@ class KuavoBaseRosEnv(gym.Env):
             raise ValueError(f"Invalid which_arm: {self.which_arm}")
 
         if not self.direct_to_wbc:
-            self.exec_action(action)
-            self.rate.sleep()
+            if self.enable_action_interpolation and self.interpolation_steps > 1:
+                self._exec_interpolated_action(action)
+            else:
+                self.exec_action(action)
+                self.rate.sleep()
         else:
             # ==== 4.1 插值下发动作（direct_to_wbc 路径）
             # 第一帧从 current state 插值过去；之后每帧在 last_predicted_action -> action 之间插值。

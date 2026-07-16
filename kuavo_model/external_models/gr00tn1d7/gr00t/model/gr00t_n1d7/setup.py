@@ -79,6 +79,7 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         """Setup model with proper vocabulary expansion."""
         skip_weight_loading = getattr(self.config.training, "skip_weight_loading", False)
         if self.config.training.start_from_checkpoint is not None and not skip_weight_loading:
+            load_with_lora = self.config.model.use_lora
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
@@ -86,6 +87,21 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
                 tune_vlln=self.config.model.tune_vlln,
+                # Load the base checkpoint into the unwrapped modules first.
+                # PEFT changes parameter names from e.g. `to_k.weight` to
+                # `to_k.base_layer.weight`, so injecting LoRA before loading a
+                # base GR00T checkpoint makes HF report hundreds of missing and
+                # unexpected keys even though the checkpoint itself is valid.
+                use_lora=False if load_with_lora else self.config.model.use_lora,
+                lora_vlm=self.config.model.lora_vlm,
+                lora_action_expert=self.config.model.lora_action_expert,
+                lora_rank=self.config.model.lora_rank,
+                lora_alpha=self.config.model.lora_alpha,
+                lora_dropout=self.config.model.lora_dropout,
+                lora_vlm_target_modules=self.config.model.lora_vlm_target_modules,
+                lora_action_expert_target_modules=(
+                    self.config.model.lora_action_expert_target_modules
+                ),
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
                 load_bf16=self.config.model.load_bf16,
@@ -118,6 +134,19 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     "Checkpoint weight mismatch for "
                     f"{self.config.training.start_from_checkpoint}:\n" + "\n".join(errors)
                 )
+
+            if load_with_lora:
+                model.config.use_lora = self.config.model.use_lora
+                model.config.lora_vlm = self.config.model.lora_vlm
+                model.config.lora_action_expert = self.config.model.lora_action_expert
+                model.config.lora_rank = self.config.model.lora_rank
+                model.config.lora_alpha = self.config.model.lora_alpha
+                model.config.lora_dropout = self.config.model.lora_dropout
+                model.config.lora_vlm_target_modules = self.config.model.lora_vlm_target_modules
+                model.config.lora_action_expert_target_modules = (
+                    self.config.model.lora_action_expert_target_modules
+                )
+                model._maybe_setup_lora()
 
         else:
             model = self.model_class(

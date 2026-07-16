@@ -216,12 +216,14 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     # from initial state to final state.
     rewards = []
     cam_keys = [k for k in observation.keys() if "images" in k or "depth" in k]
+    save_video = bool(getattr(cfg, "save_rollout_video", False))
 
     frame_temp_dirs = {}
-    for k in cam_keys:
-        temp_dir = output_directory / f"temp_frames_{episode}_{k}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        frame_temp_dirs[k] = temp_dir
+    if save_video:
+        for k in cam_keys:
+            temp_dir = output_directory / f"temp_frames_{episode}_{k}"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            frame_temp_dirs[k] = temp_dir
 
 
     average_exec_time = 0
@@ -262,12 +264,13 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
         
         rewards.append(reward)
 
-        for k in cam_keys:
-            frame_path = frame_temp_dirs[k] / f"frame_{step:04d}.png"
-            img = (observation[k].squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-            if img.shape[-1] == 1:
-                img = img.squeeze(-1)
-            imageio.imwrite(str(frame_path), img)
+        if save_video:
+            for k in cam_keys:
+                frame_path = frame_temp_dirs[k] / f"frame_{step:04d}.png"
+                img = (observation[k].squeeze(0).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+                if img.shape[-1] == 1:
+                    img = img.squeeze(-1)
+                imageio.imwrite(str(frame_path), img)
 
         # The rollout is considered done when the success state is reached (i.e. terminated is True),
         # or the maximum number of iterations is reached (i.e. truncated is True)
@@ -287,19 +290,20 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     log_model.info(f"average step time: {average_step_time / step:.3f}s")
     log_model.info(f"average sleep time: {env.unwrapped.average_sleep_time / step:.3f}s")
     
-    for cam in cam_keys:
-        temp_dir = frame_temp_dirs[cam]
-        frame_files = sorted(temp_dir.glob("frame_*.png"))
-        frames = [imageio.imread(str(f)) for f in frame_files]
-        output_path = output_directory / f"rollout_{episode}_{cam}.mp4"
-        save_rollout_video(output_path, frames, fps)
-        
+    if save_video:
+        for cam in cam_keys:
+            temp_dir = frame_temp_dirs[cam]
+            frame_files = sorted(temp_dir.glob("frame_*.png"))
+            frames = [imageio.imread(str(f)) for f in frame_files]
+            output_path = output_directory / f"rollout_{episode}_{cam}.mp4"
+            save_rollout_video(output_path, frames, fps)
+            
 
-        for f in frame_files:
-            f.unlink()
-        temp_dir.rmdir()
-        
-        del frames
+            for f in frame_files:
+                f.unlink()
+            temp_dir.rmdir()
+            
+            del frames
 
     success = success_evt.is_set()
     
@@ -315,6 +319,87 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     torch.cuda.empty_cache()
     
     return 1 if success else 0  # 返回是否成功
+
+
+def run_single_episode_async(config, policy, preprocessor, postprocessor, episode, output_directory):
+    """运行单个异步 action chunk episode。"""
+    from kuavo_deploy.src.eval.real_async_test import (
+        ActionChunkBuffer,
+        control_worker,
+        inference_worker,
+    )
+
+    cfg = config.inference
+    seed = cfg.seed
+
+    env = gym.make(
+        config.env.env_name,
+        max_episode_steps=cfg.max_episode_steps,
+        config=config,
+    )
+
+    run_single_ros_manager = ROSManager()
+    run_single_ros_manager.register_subscriber("/simulator/success", Bool, env_success_callback)
+    start_service = rospy.ServiceProxy('/simulator/start', Trigger)
+
+    try:
+        policy.reset()
+        success_evt.clear()
+        env.reset(seed=seed)
+        start_service(TriggerRequest())
+
+        if cfg.async_control_hz and cfg.async_control_hz > 0:
+            env.unwrapped.rate = rospy.Rate(cfg.async_control_hz)
+            log_robot.info(f"Async sim control rate set to {cfg.async_control_hz} Hz")
+
+        buffer = ActionChunkBuffer(maxlen=cfg.async_buffer_size)
+        stop_event = threading.Event()
+        infer_thread = threading.Thread(
+            target=inference_worker,
+            kwargs={
+                "config": config,
+                "env": env.unwrapped,
+                "policy": policy,
+                "preprocessor": preprocessor,
+                "postprocessor": postprocessor,
+                "buffer": buffer,
+                "stop_event": stop_event,
+            },
+            daemon=True,
+            name="kuavo-sim-async-inference",
+        )
+        infer_thread.start()
+
+        warmup_actions = max(1, int(cfg.async_warmup_actions))
+        warmup_timeout = float(getattr(cfg, "async_warmup_timeout", cfg.async_action_timeout))
+        if not buffer.wait_for_size(warmup_actions, timeout=warmup_timeout):
+            log_model.warning("Async warmup action wait timed out; control loop will wait on the buffer.")
+
+        start_time = time.time()
+        steps = control_worker(
+            env=env,
+            buffer=buffer,
+            stop_event=stop_event,
+            max_steps=cfg.max_episode_steps,
+            action_timeout=cfg.async_action_timeout,
+            success_event=success_evt,
+        )
+        elapsed = time.time() - start_time
+        stop_event.set()
+        infer_thread.join(timeout=2.0)
+
+        if steps > 0:
+            log_model.info(f"async episode {episode}, steps: {steps}, avg step wall time: {elapsed / steps:.3f}s")
+            log_model.info(f"average sleep time: {env.unwrapped.average_sleep_time / steps:.3f}s")
+        return 1 if success_evt.is_set() else 0
+
+    finally:
+        try:
+            env.close()
+            run_single_ros_manager.close()
+        finally:
+            gc.collect()
+            torch.cuda.empty_cache()
 
 
 def kuavo_eval_autotest(config: KuavoConfig):
@@ -379,7 +464,17 @@ def kuavo_eval_autotest(config: KuavoConfig):
                 return
             time.sleep(1)
         try:
-            result = run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory)
+            if cfg.async_inference:
+                result = run_single_episode_async(
+                    config,
+                    policy,
+                    preprocessor,
+                    postprocessor,
+                    episode,
+                    output_directory,
+                )
+            else:
+                result = run_single_episode(config, policy, preprocessor, postprocessor, episode, output_directory)
             log_robot.info(f"Episode {episode+1} completed with return code: {result}")
             
             # 重置policy状态，清理缓存
