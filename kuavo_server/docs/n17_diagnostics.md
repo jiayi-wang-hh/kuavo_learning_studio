@@ -106,7 +106,10 @@ For N1.7 servers the report includes:
 - whether LoRA parameters were instantiated and nonzero;
 - repeated-sampling standard deviation;
 - first arm action minus current arm state;
-- maximum adjacent step change inside the action chunk.
+- maximum adjacent step change inside the action chunk;
+- raw model-action finiteness per group and the first non-finite indices;
+- conversion errors without aborting the rest of the diagnostic report;
+- valid/invalid repeat counts and an `invalid_model_output` status.
 
 The N1.5 adapter does not expose the diagnostic endpoint, so the probe falls back
 to repeated `select_action_chunk` calls and reports action-side metrics. The raw
@@ -126,6 +129,9 @@ configuration differences from contaminating the comparison.
   flow sampling and RTC/overlap.
 - First action is far from the current state although each chunk is smooth: the
   visible robot jump is caused by chunk anchoring, not intra-chunk roughness.
+- `actions.status=invalid_model_output`: the checkpoint returned NaN/Inf before
+  the Kuavo action could be composed. Inspect `processor.groups` and
+  `actions.raw_model_outputs` to distinguish bad normalized input from model output.
 
 Repeat the same probe with an observation reconstructed from a training episode.
 If training observations are normal but simulator observations saturate or have
