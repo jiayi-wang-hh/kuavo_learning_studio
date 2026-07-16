@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
+import contextlib
+import io
+
 import rospy
 import numpy as np
-from cv_bridge import CvBridge
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        from cv_bridge import CvBridge
+except Exception:
+    CvBridge = None
 from sensor_msgs.msg import CompressedImage, JointState
 import cv2
 import gymnasium as gym
@@ -35,7 +42,7 @@ class KuavoBaseRosEnv(gym.Env):
         self.control_signal_manager = ControlSignalManager()
         
         # 初始化其他组件
-        self.bridge = CvBridge()
+        self.bridge = CvBridge() if CvBridge is not None else None
         self._set_observation_space()
         self._set_action_space()
         self._init_kuavo_sdk()
