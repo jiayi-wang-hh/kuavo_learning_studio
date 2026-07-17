@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from kuavo_deploy.kuavo_service.client import ExternalRobotInferenceClient
-from kuavo_server.dataset_observation import load_dataset_observation
+from kuavo_server.dataset_observation import find_middle_safe_dataset_frame, load_dataset_observation
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -96,6 +96,17 @@ def main() -> None:
     parser.add_argument("--episode", type=int, default=0, help="Dataset episode index")
     parser.add_argument("--frame", type=int, default=0, help="Frame index inside the episode")
     parser.add_argument(
+        "--auto-middle-safe-frame",
+        action="store_true",
+        help="For --dataset-path, auto-select a middle-ish frame whose percentile-normalized state is away from +/-1.",
+    )
+    parser.add_argument(
+        "--safe-state-threshold",
+        type=float,
+        default=0.85,
+        help="Maximum allowed abs(percentile-normalized state) for --auto-middle-safe-frame.",
+    )
+    parser.add_argument(
         "--model-repo-root",
         type=Path,
         default=None,
@@ -116,14 +127,29 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.dataset_path is not None:
+        selected_frame = None
+        episode = args.episode
+        frame = args.frame
+        if args.auto_middle_safe_frame:
+            selected_frame = find_middle_safe_dataset_frame(
+                args.dataset_path,
+                model_repo_root=args.model_repo_root,
+                video_backend=args.video_backend,
+                max_abs_normalized=args.safe_state_threshold,
+                use_percentiles=True,
+            )
+            episode = int(selected_frame["episode"])
+            frame = int(selected_frame["frame"])
         observation, observation_source = load_dataset_observation(
             args.dataset_path,
-            episode=args.episode,
-            frame=args.frame,
+            episode=episode,
+            frame=frame,
             prompt_override=args.prompt,
             model_repo_root=args.model_repo_root,
             video_backend=args.video_backend,
         )
+        if selected_frame is not None:
+            observation_source["auto_middle_safe_frame"] = selected_frame
     else:
         observation = torch.load(args.observation, map_location="cpu", weights_only=False)
         if not isinstance(observation, dict):

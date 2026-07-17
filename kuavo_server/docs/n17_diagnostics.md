@@ -66,8 +66,8 @@ LeRobot loader dependencies are available:
 uv run --project kuavo_model/external_models/gr00tn1d7 \
   python kuavo_server/diagnose.py \
   --dataset-path /path/to/lerobot_dataset \
-  --episode 0 \
-  --frame 0 \
+  --auto-middle-safe-frame \
+  --safe-state-threshold 0.85 \
   --server n15=localhost:5555 \
   --server n17=localhost:5556 \
   --server n17_explicit=localhost:5557 \
@@ -82,7 +82,12 @@ order and maps the videos to the raw deployment observation keys. Use
 `--prompt "..."` only when you want to override the dataset task description.
 
 The report records the resolved dataset path, episode, frame, and video backend
-under `observation_source`, making the sampled frame reproducible.
+under `observation_source`, making the sampled frame reproducible. With
+`--auto-middle-safe-frame`, the client scans from the middle of the dataset and
+chooses the first frame whose percentile-normalized state stays within
+`--safe-state-threshold` for every state dimension. If no frame meets the
+threshold, it uses the best available frame and marks that under
+`observation_source.auto_middle_safe_frame.selected_by`.
 
 ### Read a previously saved observation
 
