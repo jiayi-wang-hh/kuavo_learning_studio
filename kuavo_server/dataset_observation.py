@@ -55,6 +55,21 @@ def _state_safety_score(normalized: dict[str, np.ndarray]) -> float:
     return float(max(np.abs(values).max(initial=0.0) for values in normalized.values()))
 
 
+def _state_statistics_from_loader(loader: Any) -> dict[str, dict[str, list[float]]]:
+    state_stats: dict[str, dict[str, list[float]]] = {}
+    for key in STATE_KEYS:
+        meta = loader.modality_meta["state"][key]
+        stats_key = meta.get("original_key", "observation.state")
+        start, end = int(meta["start"]), int(meta["end"])
+        if stats_key not in loader.stats:
+            raise KeyError(f"Dataset stats missing state source {stats_key!r} for state.{key}")
+        state_stats[key] = {}
+        for stat_type in ("min", "max", "mean", "std", "q01", "q99"):
+            if stat_type in loader.stats[stats_key]:
+                state_stats[key][stat_type] = loader.stats[stats_key][stat_type][start:end]
+    return state_stats
+
+
 def _default_gr00t_repo_root() -> Path:
     return Path(__file__).resolve().parents[1] / "kuavo_model" / "external_models" / "gr00tn1d7"
 
@@ -160,7 +175,7 @@ def find_middle_safe_dataset_frame(
         raise FileNotFoundError(f"N1.7 repository does not exist: {repo_root}")
 
     loader = _dataset_loader(dataset_path, metadata, repo_root, video_backend)
-    state_stats = loader.get_dataset_statistics()["state"]
+    state_stats = _state_statistics_from_loader(loader)
     episode_count = len(loader)
     if episode_count == 0:
         raise ValueError(f"Dataset has no episodes: {dataset_path}")

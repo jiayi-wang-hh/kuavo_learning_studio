@@ -2,11 +2,14 @@ import unittest
 
 import numpy as np
 
+from types import SimpleNamespace
+
 from kuavo_server.dataset_observation import (
     _normalize_minmax,
     _row_to_kuavo_observation,
     _state_normalized_values,
     _state_safety_score,
+    _state_statistics_from_loader,
     _validate_modality_metadata,
 )
 
@@ -81,6 +84,29 @@ class TestDatasetObservation(unittest.TestCase):
         }
         normalized = _state_normalized_values(row, stats)
         self.assertAlmostEqual(_state_safety_score(normalized), 0.75)
+
+    def test_state_statistics_do_not_require_action_modality_config(self):
+        loader = SimpleNamespace(
+            modality_meta={
+                "state": {
+                    "left_arm": {"start": 0, "end": 7},
+                    "left_gripper": {"start": 7, "end": 8},
+                    "right_arm": {"start": 8, "end": 15},
+                    "right_gripper": {"start": 15, "end": 16},
+                }
+            },
+            stats={
+                "observation.state": {
+                    "q01": list(range(16)),
+                    "q99": list(range(100, 116)),
+                    "min": list(range(200, 216)),
+                    "max": list(range(300, 316)),
+                }
+            },
+        )
+        stats = _state_statistics_from_loader(loader)
+        self.assertEqual(stats["left_arm"]["q01"], list(range(7)))
+        self.assertEqual(stats["right_gripper"]["q99"], [115])
 
 
 if __name__ == "__main__":
