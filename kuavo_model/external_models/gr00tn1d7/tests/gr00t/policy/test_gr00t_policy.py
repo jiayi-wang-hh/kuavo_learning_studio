@@ -49,6 +49,47 @@ def _build_modality_configs():
     }
 
 
+def test_inference_loader_uses_checkpoint_config_and_loading_info():
+    from gr00t.policy import gr00t_policy as policy_module
+
+    model = MagicMock()
+    config = MagicMock()
+    model_dir = Path("/fake/checkpoint")
+
+    with (
+        patch.object(policy_module.AutoConfig, "from_pretrained", return_value=config),
+        patch.object(
+            policy_module.AutoModel,
+            "from_pretrained",
+            return_value=(model, {}),
+        ) as load_model,
+    ):
+        assert policy_module._load_model_for_inference(model_dir) is model
+
+    load_model.assert_called_once_with(
+        model_dir,
+        config=config,
+        output_loading_info=True,
+    )
+
+
+def test_inference_loader_rejects_weight_mismatch():
+    from gr00t.policy import gr00t_policy as policy_module
+
+    with (
+        patch.object(policy_module.AutoConfig, "from_pretrained", return_value=MagicMock()),
+        patch.object(
+            policy_module.AutoModel,
+            "from_pretrained",
+            return_value=(
+                MagicMock(),
+                {"missing_keys": ["backbone.model.visual.lora_A.default.weight"]},
+            ),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="Missing keys"):
+            policy_module._load_model_for_inference(Path("/fake/checkpoint"))
+
 @pytest.fixture
 def policy():
     mock_model = MagicMock()
@@ -94,12 +135,14 @@ def policy():
 
     # Patch both AutoModel and AutoProcessor, and also the processor_config.json check
     with (
+        patch("gr00t.policy.gr00t_policy.AutoConfig") as MockAutoConfig,
         patch("gr00t.policy.gr00t_policy.AutoModel") as MockAutoModel,
         patch("gr00t.policy.gr00t_policy.AutoProcessor") as MockAutoProcessor,
         patch("pathlib.Path.is_dir", return_value=False),
         patch("pathlib.Path.exists", return_value=True),
     ):
-        MockAutoModel.from_pretrained.return_value = mock_model
+        MockAutoConfig.from_pretrained.return_value = MagicMock()
+        MockAutoModel.from_pretrained.return_value = (mock_model, {})
         MockAutoProcessor.from_pretrained.return_value = mock_processor
 
         from gr00t.policy.gr00t_policy import Gr00tPolicy
