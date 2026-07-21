@@ -49,7 +49,7 @@ adapters:
       mode: uv
       project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d7
     args:
-      checkpoint: /home/yuan/yuan_meng_kuavo/jiayi/kuavo_learning_studio/outputs/groot_n17_diffusion_vision_lora/checkpoint-60000                   # 必填
+      checkpoint: /home/yuan/yuan_meng_kuavo/jiayi/kuavo_learning_studio/outputs/groot_n17_diffusion_lora/checkpoint-60000                   # 必填
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
       execution_horizon: 16                                   # receding horizon chunk size
