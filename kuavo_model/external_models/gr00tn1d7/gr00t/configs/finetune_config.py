@@ -86,6 +86,16 @@ class FinetuneConfig:
     Dropout probability applied to state inputs for regularization during training.
     """
 
+    use_percentiles: bool = False
+    """
+    Use q01/q99 instead of min/max for state and action normalization.
+
+    Disabled by default for fine-tuning because task-critical but infrequent actions
+    (for example a binary gripper close command) can fall outside q01/q99 and be
+    irreversibly clipped. Enable only after verifying that every action dimension's
+    percentile range covers the valid task workspace.
+    """
+
     # --- Data Augmentation ---
     random_rotation_angle: int | None = None
     """Maximum rotation angle (in degrees) for random rotation augmentation of input images."""
