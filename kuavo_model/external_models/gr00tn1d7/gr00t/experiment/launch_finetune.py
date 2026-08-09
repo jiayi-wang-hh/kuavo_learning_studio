@@ -84,6 +84,16 @@ if __name__ == "__main__":
     config.model.diffusion_lora_dropout = ft_config.diffusion_lora_dropout
     config.model.state_dropout_prob = ft_config.state_dropout_prob
     config.model.use_percentiles = ft_config.use_percentiles
+    print(
+        "[Normalization] "
+        f"ft_config.use_percentiles={ft_config.use_percentiles}, "
+        f"config.model.use_percentiles={config.model.use_percentiles}"
+    )
+    if config.model.use_percentiles:
+        print(
+            "[Normalization] WARNING: q01/q99 normalization is enabled. "
+            "Omit --use-percentiles to use min/max normalization."
+        )
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
     if ft_config.extra_augmentation_config:
