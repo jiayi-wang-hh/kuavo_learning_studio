@@ -286,3 +286,34 @@ action.left_gripper: min=0, max=1, mean=0.1970038, std=0.3970192
 processor/processor_config.json: use_percentiles=false
 checkpoint/config.json: use_percentiles=false
 ```
+
+### 第六步：保护检查暴露 `from_pretrained()` 丢弃 override
+
+加入 processor/model 一致性检查后，新训练在启动阶段报错：
+
+```text
+Normalization configuration mismatch:
+processor.use_percentiles=True, model_config.use_percentiles=False
+```
+
+这说明前面的“配置可能不同步”还不是完整根因。继续检查
+`Gr00tN1d7Processor.from_pretrained()` 后发现，`setup.py` 虽然明确传入：
+
+```python
+AutoProcessor.from_pretrained(..., use_percentiles=False)
+```
+
+但 `from_pretrained()` 只会应用 `override_keys` 白名单中的参数，而该列表遗漏了
+`use_percentiles`。因此传入的 `False` 被静默丢弃，processor 继续采用 base checkpoint
+保存的 `True`。这也解释了为什么 `FinetuneConfig` 和 pipeline 都显示 false，最终生成的
+`processor/processor_config.json` 却仍为 true。
+
+最终补充修复是在 processor 的 override 白名单中加入：
+
+```python
+"use_percentiles",
+```
+
+并增加回归测试，确认 `Gr00tN1d7Processor.from_pretrained(..., use_percentiles=...)` 能覆盖
+checkpoint 内的旧值。之前加入的一致性检查应继续保留：它不是错误来源，而是成功阻止了
+训练在错误 normalization 配置下继续运行。
