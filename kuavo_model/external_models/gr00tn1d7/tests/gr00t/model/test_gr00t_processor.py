@@ -59,6 +59,20 @@ def proc_config():
         return json.load(f)["processor_kwargs"]
 
 
+def test_from_pretrained_overrides_use_percentiles():
+    """Runtime normalization overrides must replace the checkpoint value."""
+    from gr00t.model.gr00t_n1d7.processing_gr00t_n1d7 import Gr00tN1d7Processor
+
+    mock_vlm = MagicMock()
+    with patch(
+        "gr00t.model.gr00t_n1d7.processing_gr00t_n1d7.build_processor",
+        return_value=mock_vlm,
+    ):
+        proc = Gr00tN1d7Processor.from_pretrained(FIXTURE_DIR, use_percentiles=True)
+
+    assert proc.use_percentiles is True
+
+
 def _make_step_data(proc_config) -> VLAStepData:
     """Create synthetic VLAStepData matching the fixture config."""
     import json as _json

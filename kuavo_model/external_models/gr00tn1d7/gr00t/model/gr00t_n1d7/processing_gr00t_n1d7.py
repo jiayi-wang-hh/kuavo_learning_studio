@@ -778,6 +778,7 @@ class Gr00tN1d7Processor(BaseProcessor):
             override_keys = [
                 "random_rotation_angle",
                 "color_jitter_params",
+                "use_percentiles",
                 "use_relative_action",
                 "exclude_state",
                 "state_dropout_prob",
