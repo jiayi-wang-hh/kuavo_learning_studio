@@ -72,6 +72,10 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
     def setup(self):
         self.model = self._create_model()
+        # AutoModel.from_pretrained keeps normalization metadata from the base
+        # checkpoint in model.config. Keep it aligned with the processor used by
+        # this fine-tuning run so saved checkpoint config.json is authoritative.
+        self.model.config.use_percentiles = self.model_config.use_percentiles
         self.train_dataset, self.eval_dataset = self._create_dataset(self.save_cfg_dir)
         self.data_collator = self._create_collator()
 
@@ -305,6 +309,13 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 state_dropout_prob=self.model_config.state_dropout_prob,
                 use_mean_std=self.model_config.use_mean_std,
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
+            )
+
+        if processor.use_percentiles != self.model_config.use_percentiles:
+            raise RuntimeError(
+                "Normalization configuration mismatch: "
+                f"processor.use_percentiles={processor.use_percentiles}, "
+                f"model_config.use_percentiles={self.model_config.use_percentiles}"
             )
 
         logging.debug(

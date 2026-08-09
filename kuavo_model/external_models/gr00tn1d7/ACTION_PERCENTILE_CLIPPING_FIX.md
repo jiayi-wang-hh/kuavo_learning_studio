@@ -19,6 +19,58 @@ use_percentiles = true
 clip_outliers = true
 ```
 
+## 训练配置已改为 false，但 checkpoint 仍显示 true
+
+排查 Kuavo 数据时还发现了一个容易误导诊断的配置同步问题：即使
+`FinetuneConfig.use_percentiles` 已设为 `false`，旧版训练流程保存出的 checkpoint 根目录
+`config.json` 仍可能显示：
+
+```json
+"use_percentiles": true
+```
+
+原因是 `launch_finetune.py` 修改的是训练 pipeline 的 `config.model`，而
+`AutoModel.from_pretrained()` 创建的 Hugging Face 模型会保留 base checkpoint 中的
+`model.config.use_percentiles=true`。Trainer 保存模型时序列化的是后者。训练 processor
+与模型配置因此可能出现互相矛盾的记录。
+
+本次修复在模型创建后显式同步：
+
+```python
+model.config.use_percentiles = self.model_config.use_percentiles
+```
+
+同时在 processor 创建后检查二者是否一致；不一致时立即终止训练，避免生成归一化语义
+不明确的 checkpoint。训练入口也会打印最终解析值。Tyro 的布尔参数
+`--use-percentiles` 表示启用该选项；使用默认的 min/max 时必须省略该参数，不能写成
+`--use-percentiles false`。
+
+### 三处配置都必须一致
+
+新训练启动后应检查：
+
+1. 控制台打印 `config.model.use_percentiles=False`；
+2. `<output_dir>/processor/processor_config.json` 中为 `false`；
+3. 新 checkpoint 根目录 `config.json` 中也为 `false`。
+
+训练代码会调用 `trainer.train(resume_from_checkpoint=True)`。因此切换归一化方式时必须使用
+全新的输出目录，并从原始 base model 开始；复用旧输出目录会自动恢复已有 checkpoint，
+而从旧 post-training checkpoint 开始也会继承已经在 percentile clipping 下学习的权重。
+
+### 本次数据诊断证据
+
+在 `task2_pick_apple_messy_lerobot_jiayi` 数据中，open-loop 预测平台与 action percentile
+边界逐维吻合。例如：
+
+```text
+Action 6:  prediction ~= 0.25, q01 = 0.2485567521
+Action 15: prediction ~= 0.52, q99 = 0.5206471342
+```
+
+这说明该结果实际使用或继承了 percentile normalization。另需注意，state 与 action 的
+夹爪统计不同：`state.left_gripper.max=0.46`，而 `action.left_gripper.max=1.0`；诊断时不能
+把 state 统计误当作 action 统计。
+
 启用后，state/action 使用 `q01` 和 `q99` 作为归一化边界；落在边界外的值被裁剪到 `[-1, 1]`。这适合排除真正的异常值，但对低频且合法的任务动作并不安全。
 
 apple-pick checkpoint 的 `new_embodiment.action` 中存在如下统计：
