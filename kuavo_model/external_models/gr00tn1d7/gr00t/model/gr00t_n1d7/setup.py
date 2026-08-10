@@ -229,6 +229,12 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
 
+        # ``from_pretrained`` keeps normalization metadata from the base
+        # checkpoint.  Synchronize it before serializing the diagnostic config;
+        # otherwise final_model_config.json can disagree with both the training
+        # processor and the config.json later saved by Trainer.
+        model.config.use_percentiles = self.model_config.use_percentiles
+
         logging.debug(f"Model Config: {model.config}")
         if get_rank() == 0:
             with open(self.save_cfg_dir / "final_model_config.json", "w") as f:
