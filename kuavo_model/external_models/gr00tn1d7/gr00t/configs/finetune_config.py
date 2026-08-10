@@ -51,15 +51,49 @@ class FinetuneConfig:
     tune_visual: bool = False
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
+    use_visual_lora: bool = False
+    """If True, freeze the base visual encoder and train LoRA adapters in its attention layers."""
+
+    visual_lora_rank: int = 8
+    """Rank of the visual-encoder LoRA adapters."""
+
+    visual_lora_alpha: int = 16
+    """Scaling alpha of the visual-encoder LoRA adapters."""
+
+    visual_lora_dropout: float = 0.05
+    """Dropout probability used by the visual-encoder LoRA adapters."""
+
     tune_projector: bool = True
     """If True, fine-tune the multimodal projector layers that map vision/language features to a shared space."""
 
     tune_diffusion_model: bool = True
     """If True, fine-tune the diffusion-based action decoder (if present in the model)."""
 
+    use_diffusion_lora: bool = False
+    """If True, freeze the base diffusion model and train LoRA adapters in its attention layers."""
+
+    diffusion_lora_rank: int = 8
+    """Rank of the diffusion-model LoRA adapters."""
+
+    diffusion_lora_alpha: int = 16
+    """Scaling alpha of the diffusion-model LoRA adapters."""
+
+    diffusion_lora_dropout: float = 0.05
+    """Dropout probability used by the diffusion-model LoRA adapters."""
+
     state_dropout_prob: float = 0.2
     """
     Dropout probability applied to state inputs for regularization during training.
+    """
+
+    use_percentiles: bool = False
+    """
+    Use q01/q99 instead of min/max for state and action normalization.
+
+    Disabled by default for fine-tuning because task-critical but infrequent actions
+    (for example a binary gripper close command) can fall outside q01/q99 and be
+    irreversibly clipped. Enable only after verifying that every action dimension's
+    percentile range covers the valid task workspace.
     """
 
     # --- Data Augmentation ---
@@ -110,6 +144,12 @@ class FinetuneConfig:
 
     gradient_accumulation_steps: int = 1
     """Number of forward passes to accumulate before performing a backward/update step."""
+
+    gradient_checkpointing: bool = False
+    """If True, recompute transformer activations during backward to reduce VRAM usage."""
+
+    load_bf16: bool = False
+    """If True, load the frozen Qwen3-VL backbone in BF16 to reduce VRAM usage."""
 
     output_dir: str = "./outputs"
     """Directory where model checkpoints, logs, and outputs are saved."""

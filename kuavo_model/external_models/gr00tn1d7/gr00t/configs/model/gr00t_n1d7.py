@@ -44,6 +44,11 @@ class Gr00tN1d7Config(PretrainedConfig):
     backbone_embedding_dim: int = 2048  # project_to_dim; must match Cosmos-Reason2-2B hidden size
     tune_llm: bool = False
     tune_visual: bool = False
+    use_visual_lora: bool = False
+    visual_lora_rank: int = 8
+    visual_lora_alpha: int = 16
+    visual_lora_dropout: float = 0.05
+    visual_lora_target_modules: tuple[str, ...] = ("qkv", "proj")
     select_layer: int = 12
     reproject_vision: bool = False
     use_flash_attention: bool = True
@@ -112,6 +117,11 @@ class Gr00tN1d7Config(PretrainedConfig):
     tune_projector: bool = True
     tune_diffusion_model: bool = True
     tune_vlln: bool = True
+    use_diffusion_lora: bool = False
+    diffusion_lora_rank: int = 8
+    diffusion_lora_alpha: int = 16
+    diffusion_lora_dropout: float = 0.05
+    diffusion_lora_target_modules: tuple[str, ...] = ("to_q", "to_k", "to_v", "to_out.0")
 
     # State augmentation parameters
     state_dropout_prob: float = 0.8  # State dropout probability

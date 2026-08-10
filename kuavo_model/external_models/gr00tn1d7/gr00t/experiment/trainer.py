@@ -213,10 +213,13 @@ class Gr00tTrainer(Trainer):
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
         # Hide epoch from logged metrics as it's misleading for Iterable datasets.
+        metrics = dict(logs)
         epoch = self.state.epoch
         self.state.epoch = None
         super().log(logs, start_time=start_time)
         self.state.epoch = epoch
+        if self.state.is_world_process_zero:
+            logging.info("Trainer metrics | step=%d | %s", self.state.global_step, metrics)
 
     def get_train_dataloader(self):  # noqa: D401
         """Return a iterable dataloader without skipping the data during resume, but reseed the dataset instead."""

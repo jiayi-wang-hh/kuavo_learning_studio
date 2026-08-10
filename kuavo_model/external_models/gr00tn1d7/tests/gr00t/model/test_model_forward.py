@@ -23,6 +23,7 @@ action predictions of the expected shape.
 
 from unittest.mock import MagicMock, patch
 
+from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
 import pytest
 import torch
@@ -220,3 +221,24 @@ class TestGr00tN1d7Config:
 
         parsed = json.loads(j)
         assert parsed["model_type"] == "Gr00tN1d7"
+
+
+class TestFinetuneNormalizationConfig:
+    """Regression tests for task-critical action percentile clipping."""
+
+    def test_finetune_uses_min_max_normalization_by_default(self):
+        config = FinetuneConfig(
+            base_model_path="model",
+            dataset_path="dataset",
+            embodiment_tag="NEW_EMBODIMENT",
+        )
+        assert config.use_percentiles is False
+
+    def test_percentile_normalization_remains_explicitly_available(self):
+        config = FinetuneConfig(
+            base_model_path="model",
+            dataset_path="dataset",
+            embodiment_tag="NEW_EMBODIMENT",
+            use_percentiles=True,
+        )
+        assert config.use_percentiles is True

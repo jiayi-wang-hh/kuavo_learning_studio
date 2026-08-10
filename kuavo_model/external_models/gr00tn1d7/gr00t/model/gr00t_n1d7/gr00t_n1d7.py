@@ -103,6 +103,46 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
+        self.use_diffusion_lora = False
+        if config.use_diffusion_lora:
+            self.enable_diffusion_lora()
+
+    def enable_diffusion_lora(self) -> None:
+        """Inject diffusion LoRA, including when called after checkpoint loading."""
+        if self.use_diffusion_lora:
+            return
+        self._add_diffusion_lora()
+        self.use_diffusion_lora = True
+
+    def _add_diffusion_lora(self) -> None:
+        """Freeze the base DiT and inject trainable LoRA adapters into its attention layers."""
+        if self.tune_diffusion_model:
+            raise ValueError(
+                "use_diffusion_lora=True requires tune_diffusion_model=False; "
+                "pass --no-tune-diffusion-model when enabling diffusion LoRA."
+            )
+
+        from peft import LoraConfig, inject_adapter_in_model
+
+        lora_config = LoraConfig(
+            r=self.config.diffusion_lora_rank,
+            lora_alpha=self.config.diffusion_lora_alpha,
+            lora_dropout=self.config.diffusion_lora_dropout,
+            target_modules=list(self.config.diffusion_lora_target_modules),
+            bias="none",
+        )
+        self.model = inject_adapter_in_model(lora_config, self.model)
+
+        trainable_lora = [
+            name
+            for name, parameter in self.model.named_parameters()
+            if parameter.requires_grad and "lora_" in name
+        ]
+        if not trainable_lora:
+            raise RuntimeError(
+                "Diffusion LoRA was enabled, but no trainable LoRA parameters were injected."
+            )
+        logger.info("Injected diffusion LoRA into %d parameters", len(trainable_lora))
 
     def set_trainable_parameters(
         self, tune_projector: bool, tune_diffusion_model: bool, tune_vlln: bool
@@ -147,7 +187,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 self.action_decoder.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
-            if not self.tune_diffusion_model:
+            if not self.tune_diffusion_model and not self.use_diffusion_lora:
                 self.model.eval()
             if not self.tune_vlln:
                 self.vlln.eval()
@@ -237,22 +277,22 @@ class Gr00tN1d7ActionHead(nn.Module):
         if self.config.use_alternate_vl_dit:
             image_mask = backbone_output.image_mask
             backbone_attention_mask = backbone_output.backbone_attention_mask
-            model_output, _ = self.model(
+            model_output = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
                 timestep=t_discretized,
-                return_all_hidden_states=True,
+                return_all_hidden_states=False,
                 image_mask=image_mask,
                 backbone_attention_mask=backbone_attention_mask,
             )
         else:
-            model_output, _ = self.model(
+            model_output = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
                 timestep=t_discretized,
-                return_all_hidden_states=True,
+                return_all_hidden_states=False,
             )
 
         pred = self.action_decoder(model_output, embodiment_id)
@@ -517,6 +557,11 @@ class Gr00tN1d7(PreTrainedModel):
             model_name=config.model_name,
             tune_llm=config.tune_llm,
             tune_visual=config.tune_visual,
+            use_visual_lora=config.use_visual_lora,
+            visual_lora_rank=config.visual_lora_rank,
+            visual_lora_alpha=config.visual_lora_alpha,
+            visual_lora_dropout=config.visual_lora_dropout,
+            visual_lora_target_modules=config.visual_lora_target_modules,
             select_layer=config.select_layer,
             reproject_vision=config.reproject_vision,
             use_flash_attention=config.use_flash_attention,
