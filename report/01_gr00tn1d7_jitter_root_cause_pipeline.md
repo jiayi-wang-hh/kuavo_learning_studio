@@ -357,7 +357,7 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 #### Step 1：完成两个高价值确认实验
 
 1. **E0 重复性**：Bottle 和 Apple 各选择正常帧、最大边界前帧和夹爪切换前帧，共 3 个 observation；每个 observation 重复推理 10 次。报告每个 action step/关节的预测方差。若同一输入方差很大，先固定随机种子或推理噪声，再做 chunk 融合。
-2. **E7 adapter 对照**：对同一批 observation，比较直接 `Gr00tPolicy.get_action()` 与 `diagnose_action_chunk` 的完整输出。目标是逐元素误差接近浮点容差，从而排除 action key 映射、序列化和 Kuavo 维度组合错误。
+2. **E7 adapter 对照**：对同一批 observation，使用 `diagnose_action_chunk` 同一 response 中的原始 `Gr00tPolicy.get_action()` action dict 重建 Kuavo 顺序，并与 adapter 转换后的完整 chunk 比较。目标是逐元素误差接近浮点容差，从而排除 action key 映射、序列化和 Kuavo 维度组合错误。
 
 这两项不需要真机，且会直接决定修正应落在模型采样、adapter 还是 chunk executor。
 
@@ -391,6 +391,63 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 
 每个任务运行前必须启动对应 checkpoint 的 adapter server。输出 `summary.json` 和 `controls.npz`。E7 的 `pass_at_1e-7` 应为 true；E0 重点比较正常帧、异常边界帧和夹爪转换帧的 `repeat_deviation_l2`、`per_element_std` 与 `first_action_per_element_std`。
 
+#### E0/E7 实际结果
+
+Bottle 实际测试帧为 `0,48,80`；Apple 实际测试帧为 `0,48,80`。每帧重复推理 10 次，execution horizon 为 8。
+
+E7 结果：
+
+| 任务 | 最大逐元素映射误差 | `pass_at_1e-7` | 结论 |
+| --- | ---: | --- | --- |
+| Bottle | 0.0 | true | action key 顺序、拼接和 wire response 一致 |
+| Apple | 0.0 | true | action key 顺序、拼接和 wire response 一致 |
+
+因此现有 jitter 证据不能归因于 adapter 的 `left_arm/left_gripper/right_arm/right_gripper` 拼接错误。E7 比较的是同一次模型采样的 raw 与 converted 输出，可以避免 diffusion 独立采样导致的假差异。
+
+E0 手臂与夹爪分离结果：
+
+| 任务/帧 | 语义 | 手臂逐元素 std 均值 | 手臂 std P95 | 手臂 std 最大值 | 夹爪 std 最大值 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Bottle 0 | 普通基线 | 0.0105 | 0.0171 | 0.0214 | 0.0038 |
+| Bottle 48 | h8 手臂异常边界前 | 0.0120 | 0.0203 | 0.0273 | 0.0103 |
+| Bottle 80 | 夹爪转换前 | 0.0118 | 0.0199 | 0.0269 | 0.3731 |
+| Apple 0 | 普通基线 | 0.0070 | 0.0154 | 0.0341 | 0.0041 |
+| Apple 48 | 普通/非目标边界帧 | 0.0061 | 0.0104 | 0.0150 | 0.0006 |
+| Apple 80 | 夹爪转换前 | 0.0069 | 0.0138 | 0.0329 | 0.3559 |
+
+解释：
+
+- Bottle frame 48 的手臂 std 比 frame 0 略高，但只约高 14%，没有数量级差异；Apple frame 48 反而低于基线。现有证据不支持“异常边界主要由该 observation 的采样方差突然增大”这一假设。
+- 两个任务的普通手臂预测都存在非零 diffusion 随机性（逐元素 std 均值约 `0.006–0.012 rad`），可能贡献一部分边界变化，但不是异常边界的唯一解释。
+- frame 80 的巨大整体重复偏差由夹爪支配。Bottle 的最大夹爪 std 为 `0.3731`，Apple 为 `0.3559`；高方差集中在预测未来第 9–11 步，表示模型对“何时闭合”的时序呈现近似多模态，而不是当前第一步手臂输出不稳定。
+- 两个任务在 frame 80 的 first-action std 仍接近普通水平。使用 h8 时，不执行最不确定的第 9–11 步远期预测，这进一步支持 h8 而不是 h16。
+
+Apple 原计划用于最大 h8 手臂边界的前帧是 24，首轮实际上传结果使用了 frame 48，因此补测 frame 24：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_jitter_controls.py \
+  --dataset-root /root/bayes-tmp/kuavo_dataset/task2_pick_apple_messy_lerobot/lerobot_v2.1 \
+  --episode 0 \
+  --frames 24 \
+  --repeat-count 10 \
+  --prompt "Pick up the red apple from the table." \
+  --output-dir outputs/jitter/apple/controls_e0_frame24_h8
+```
+
+补测结果：
+
+- 全 chunk `per_element_std` mean/P95/max 为 `0.0182/0.0871/0.1246`，表面上明显高于 Apple 普通帧；
+- 但 first-action std mean/P95/max 仅为 `0.0050/0.0085/0.0094`，与普通帧接近；
+- arm-only std 从 step 0 的约 `0.0055` 逐步增长，在 step 8 约为 `0.0205`，step 12–16 约为 `0.0366–0.0412`；
+- 最大方差来自远期 step 12–16 的右臂 J1/J4/J5，其中 RJ4 最大 std 为 `0.1246 rad`；
+- 夹爪 std 最大仅 `0.0041`，本帧的高方差与夹爪无关；
+- E7 映射误差仍为 `0.0`。
+
+因此 frame 24 的异常不是“当前第一步随机”，而是预测越远、右臂轨迹分歧越大。h8 只执行前 8 步，可避免直接执行方差最高的 step 9–16；执行到第 8 步前重新观测和推理是合理的 receding-horizon 策略。
+
+至此 E0/E7 均可关闭：模型存在随预测距离增长的 diffusion 不确定性，但 h8 已截掉最不稳定的远期部分；代码修正不应继续针对 adapter 映射，也不必先尝试完全消除模型随机性。下一实现重点转向 h8 的跨 chunk 手臂融合和夹爪独立状态机。
+
 #### Step 2：实施低风险配置和夹爪修正
 
 1. 默认设置 `execution_horizon=8`。
@@ -409,6 +466,76 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 - chunk 内加速度 P95 不恶化；
 - first-action 与数据集 action 的误差没有显著增大；
 - h8 推理/融合总耗时仍显著低于 800 ms。
+
+仓库工具：`kuavo_server/tools/offline_chunk_blending_eval.py`。该工具只读取已有 `chunks.npz`，不需要 GPU、checkpoint 或运行中的 adapter server。它输出：
+
+- `summary.json`：融合前后 arm-only 指标和相对变化；
+- `boundary_comparison.csv`：逐边界位置跳变与速度 cosine；
+- `blended_chunks.npz`：baseline 与 blended 的实际执行 chunks。
+
+融合规则：模型仍预测 16 步、执行 8 步；新 chunk 的前 N 步由上一预测未执行 tail 与新预测 head 做 linear/cosine ramp。`--new-chunk-start-weight` 控制第一个融合点采用多少新预测：0 表示完全延续旧 tail，1 表示完全采用新 chunk。只融合14维手臂；夹爪可选择 passthrough 或 `[0.35,0.65]` 迟滞锁存。
+
+Bottle 示例：
+
+```bash
+python kuavo_server/tools/offline_chunk_blending_eval.py \
+  --input-dir outputs/jitter/bottle/offline_ep0_h08 \
+  --execution-horizon 8 \
+  --blend-steps 8 \
+  --blend-mode cosine \
+  --new-chunk-start-weight 0.25 \
+  --gripper-mode hysteresis \
+  --output-dir outputs/jitter/bottle/blended_h08_cosine_w025
+```
+
+Apple 示例：
+
+```bash
+python kuavo_server/tools/offline_chunk_blending_eval.py \
+  --input-dir outputs/jitter/apple/offline_ep0_h08 \
+  --execution-horizon 8 \
+  --blend-steps 8 \
+  --blend-mode cosine \
+  --new-chunk-start-weight 0.25 \
+  --gripper-mode hysteresis \
+  --output-dir outputs/jitter/apple/blended_h08_cosine_w025
+```
+
+#### 离线融合 pilot 结果
+
+首先测试 cosine、8 个融合点、new-chunk start weight 0.0。Bottle 的 boundary jump mean/P95 分别下降 `47.4%/54.1%`，Apple 分别下降 `53.1%/63.4%`；两个任务的速度 cosine P05/median 均改善。但 Apple first-action error mean 从 `0.0898` 上升至 `0.0948`、P95 从 `0.1194` 上升至 `0.1468`，说明完全延续旧 tail 会减弱新观测修正。
+
+随后扫描 start weight，cosine、8 步、start weight 0.25 在两个任务上取得更均衡结果：
+
+| 任务 | 指标 | h8 baseline | cosine-8-w0.25 | 变化 |
+| --- | --- | ---: | ---: | ---: |
+| Bottle | arm boundary jump mean | 0.1013 | 0.0507 | -49.9% |
+| Bottle | arm boundary jump P95 | 0.1644 | 0.0859 | -47.7% |
+| Bottle | velocity cosine P05 | -0.5784 | -0.4719 | +0.1064 |
+| Bottle | velocity cosine median | 0.1027 | 0.3540 | +0.2513 |
+| Bottle | intra-chunk acceleration P95 | 9.4148 | 8.2040 | -12.9% |
+| Bottle | first-action error mean | 0.0973 | 0.0824 | -15.3% |
+| Apple | arm boundary jump mean | 0.0789 | 0.0417 | -47.1% |
+| Apple | arm boundary jump P95 | 0.1827 | 0.0817 | -55.3% |
+| Apple | velocity cosine P05 | -0.1510 | -0.1074 | +0.0436 |
+| Apple | velocity cosine median | 0.4031 | 0.5495 | +0.1464 |
+| Apple | intra-chunk acceleration P95 | 7.6497 | 6.7590 | -11.6% |
+| Apple | first-action error mean | 0.0898 | 0.0879 | -2.1% |
+
+夹爪迟滞状态机在 Bottle 左右夹爪各产生一次状态切换，在 Apple 仅右夹爪切换一次，没有出现 chatter。pilot 数据支持 `cosine + blend_steps=8 + new_chunk_start_weight=0.25` 作为下一候选，但离线 teacher-forced 指标不能替代真机安全验证。
+
+#### 下一轮离线实验
+
+为避免对单个 episode 过拟合，下一轮不再扫描所有组合，只比较以下候选，并扩展到每个任务至少3个 episodes：
+
+| 候选 | Blend mode | Blend steps | Start weight | 目的 |
+| --- | --- | ---: | ---: | --- |
+| A | cosine | 8 | 0.00 | 最强连续性基线 |
+| B（推荐） | cosine | 8 | 0.25 | 平滑与新观测响应折中 |
+| C | cosine | 8 | 0.50 | 更偏重新预测，检查任务误差 |
+| D | linear | 8 | 0.25 | 检查 ramp 形状敏感性 |
+
+每个 episode 选择同一 checkpoint、相同 prompt 和相同 h8 chunks。先运行 `offline_jitter_diagnostic.py --episode N` 生成输入，再运行本工具。若候选 B 在 Bottle/Apple 的至少3个 episodes 上持续满足上述验收条件，则进入执行链路实现；否则根据 first-action error 与 boundary cosine 选择 B/C，而不是盲目增加融合强度。
 
 #### Step 4：有真机后再检查类别 C/D
 
