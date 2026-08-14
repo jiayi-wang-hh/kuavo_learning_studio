@@ -267,6 +267,8 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             "checkpoint": str(self.checkpoint),
             "embodiment_tag": self.model.embodiment_value,
             "which_arm": self.which_arm,
+            "model_action_horizon": self.model.action_horizon,
+            "execution_horizon": self.execution_horizon,
         }
 
     def reset(self) -> dict[str, Any]:
@@ -498,3 +500,32 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         if self.execution_horizon is not None:
             action_chunk = action_chunk[:self.execution_horizon]
         return np.stack([np.asarray(step) for step in action_chunk], axis=0)
+
+    def diagnose_action_chunk(self, obs: dict[str, Any]) -> dict[str, Any]:
+        """Return an untruncated action chunk and intermediate model outputs.
+
+        This endpoint is intended for offline diagnostics.  Unlike
+        ``select_action_chunk``, it deliberately ignores ``execution_horizon``
+        so callers can distinguish model jitter from execution-time chunk
+        truncation and stitching.
+        """
+        self._pending_actions.clear()
+        model_obs = self._build_model_obs(obs)
+        action_dict = self.model.infer(model_obs)
+        if not isinstance(action_dict, dict):
+            raise ValueError(f"Unexpected Isaac-GR00T-N17 output type: {type(action_dict)}")
+
+        action_chunk = self._convert_action_chunk(action_dict)
+        if not action_chunk:
+            raise ValueError("Isaac-GR00T-N17 returned empty action chunk.")
+
+        return {
+            "raw_action_dict": {
+                key: _to_numpy(value) for key, value in action_dict.items()
+            },
+            "kuavo_action_chunk": np.stack(action_chunk, axis=0),
+            "observation_state16": self._last_state16.copy(),
+            "model_action_horizon": len(action_chunk),
+            "execution_horizon": self.execution_horizon,
+            "action_keys": list(self.model.action_keys),
+        }
