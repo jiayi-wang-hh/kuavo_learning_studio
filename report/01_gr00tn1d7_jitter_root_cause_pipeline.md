@@ -288,6 +288,132 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 - **相同 observation 的重复输出差异大**：先固定随机种子并检查推理采样参数，再讨论平滑。
 - **所有离线指标正常**：只能说明未发现模型/adapter 侧证据；需要真机后用 command-feedback 日志继续检查类别 C/D。
 
+### 8.7 已完成实验与结果（Bottle + Apple）
+
+实验日期：2026-08-14。两项任务均使用 episode 0、10 FPS、模型 action horizon 16，并分别测试 execution horizon 4、8、16。所有比较均使用 adapter server 的完整未截断预测；边界按实际 execution horizon 比较。Bottle 使用 checkpoint-20000，Apple 使用 checkpoint-30000，因此跨任务只比较趋势，不把绝对指标差异解释为任务本身的因果影响。
+
+必须将 14 维手臂与 2 维夹爪分开统计。夹爪值域约为 `[0,1]`，关节单位为 rad，二者直接放入同一个 L2/加速度会让开闭事件支配结果。
+
+#### 手臂指标
+
+| 任务 | Horizon | Chunk 数 | chunk 内加速度均值 | 边界跳变均值 | 边界跳变 P95 | 边界跳变最大值 | 边界速度 cosine 均值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bottle | 4 | 39 | 7.002 | 0.092 | 0.147 | 0.229 | 0.211 |
+| Bottle | 8 | 20 | 7.157 | 0.101 | 0.164 | 0.176 | 0.108 |
+| Bottle | 16 | 10 | 7.130 | 0.127 | 0.202 | 0.216 | 0.201 |
+| Apple | 4 | 34 | 4.875 | 0.062 | 0.144 | 0.206 | 0.471 |
+| Apple | 8 | 17 | 4.843 | 0.079 | 0.183 | 0.230 | 0.412 |
+| Apple | 16 | 9 | 4.852 | 0.116 | 0.252 | 0.291 | 0.371 |
+
+结果解释：
+
+- 同一任务内，h4/h8/h16 的手臂 chunk 内加速度基本不变。当前没有证据表明执行 horizon 是 chunk 内抖动的主因。
+- 两个任务中，h16 的手臂边界跳变均值和 P95 都最大；缩短 horizon 能改善平均边界位置连续性。
+- Apple 的 h16 最大异常位于 frame 96 → 112：右臂 J4 跳变 `-0.2305 rad`（约 `-13.2°`），右臂 J5 跳变 `-0.1379 rad`（约 `-7.9°`）。
+- Bottle 的 h16 主要异常位于 frame 48 → 64、96 → 112 和 32 → 48，边界 L2 分别约为 `0.216`、`0.181`、`0.181`，多次涉及左右臂 J4。
+- Bottle 的边界速度方向一致性整体比 Apple 差，但两个任务都存在低或负 cosine 边界，说明新 chunk 可能改变甚至反转运动方向。
+
+#### 夹爪事件
+
+原始 summary 中约 `0.99–1.38` 的边界极值以及约 `95–136` 的二阶差分峰值主要来自夹爪开闭，不是手臂 jitter：
+
+- Bottle h8 的 frame 80 → 88：左右夹爪分别跳变约 `0.975` 和 `0.963`。
+- Apple h4/h8 的 frame 80 → 88：右夹爪跳变约 `0.986/0.982`。
+- h16 有时不出现夹爪边界峰值，是因为开闭转换落在单个 chunk 内部，而不是因为夹爪预测更平滑。
+
+后续报告必须默认输出 arm-only、left/right arm 和 gripper-only 指标；夹爪应采用离散状态切换指标，不应用关节加速度阈值判定。
+
+#### 推理时延与实时裕量
+
+| 任务 | Horizon | 稳态推理均值 | 稳态 P95 | Chunk 可执行时间 | 判断 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Bottle | 4 | 约 365 ms | 约 394 ms | 400 ms | 裕量不足，部分请求超期 |
+| Bottle | 8 | 约 346 ms | 约 374 ms | 800 ms | 有约 450 ms 平均裕量 |
+| Bottle | 16 | 约 406 ms | 约 424 ms | 1600 ms | 裕量充分，但边界跳变更大 |
+| Apple | 4 | 约 364 ms | 约 404 ms | 400 ms | P95 已超过 chunk 时长 |
+| Apple | 8 | 约 334 ms | 约 385 ms | 800 ms | 有约 466 ms 平均裕量 |
+| Apple | 16 | 约 363 ms | 约 386 ms | 1600 ms | 裕量充分，但边界跳变更大 |
+
+首次请求约需 `1.75–1.87 s`，必须在开始动作前完成 warm-up。h4 虽然平均边界指标最好，但在 10 Hz 下只有 400 ms 动作供给，无法可靠覆盖推理尾延迟，因此可能把 jitter 问题转化为 buffer empty 或 stop-and-go。
+
+#### 阶段性结论
+
+现有离线证据在两个任务上方向一致：
+
+1. 单个预测 chunk 内的手臂平滑性对 execution horizon 不敏感；
+2. 跨 chunk 边界存在显著位置跳变和速度方向不一致，支持类别 B；
+3. h16 的边界幅度偏大；h4 的实时裕量不足；
+4. `execution_horizon=8 + asynchronous inference` 是目前最合理的真机起点；
+5. 夹爪必须从手臂轨迹平滑中拆出，使用独立状态机处理。
+
+该结论仍是 teacher-forced 离线证据：下一 observation 来自数据集，而不是预测 action 作用后的真实状态。它不能排除类别 C/D。
+
+### 8.8 下一步决策：先做两项确认，再实施边界修正
+
+不建议继续无目标地遍历所有 E0–E7，也不建议立即接入完整 RTC。当前 GR00T N1.7 模型 horizon 为 16，而 NVIDIA 文档中的标准 RTC 建议 action chunk 至少 32，且当前 server-client 路径没有现成 RTC 集成。直接上 RTC 会同时改变调度和轨迹融合，难以验证因果。
+
+按以下顺序推进：
+
+#### Step 1：完成两个高价值确认实验
+
+1. **E0 重复性**：Bottle 和 Apple 各选择正常帧、最大边界前帧和夹爪切换前帧，共 3 个 observation；每个 observation 重复推理 10 次。报告每个 action step/关节的预测方差。若同一输入方差很大，先固定随机种子或推理噪声，再做 chunk 融合。
+2. **E7 adapter 对照**：对同一批 observation，比较直接 `Gr00tPolicy.get_action()` 与 `diagnose_action_chunk` 的完整输出。目标是逐元素误差接近浮点容差，从而排除 action key 映射、序列化和 Kuavo 维度组合错误。
+
+这两项不需要真机，且会直接决定修正应落在模型采样、adapter 还是 chunk executor。
+
+仓库提供 `kuavo_server/tools/offline_jitter_controls.py` 将两项控制实验合并执行。E0 对每个指定 observation 重复请求；E7 则用同一 response 中的 GR00T 原始 action dict 按 `left_arm, left_gripper, right_arm, right_gripper` 重建 Kuavo chunk，并与 adapter 输出逐元素比较。这样不需要在同一 GPU 上加载第二份模型，也不会把 diffusion 的两次独立采样误差误判成 adapter 映射误差。
+
+Bottle 推荐帧：正常帧 0、最大 h8 手臂边界前帧 48、夹爪转换前帧 80：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_jitter_controls.py \
+  --dataset-root /root/bayes-tmp/kuavo_dataset/task1_bottle_pick_lerobot/lerobot_v2.1 \
+  --episode 0 \
+  --frames 0,48,80 \
+  --repeat-count 10 \
+  --prompt "Pick up the bottles from the table." \
+  --output-dir outputs/jitter/bottle/controls_e0_e7
+```
+
+Apple 推荐帧：正常帧 0、最大 h8 手臂边界前帧 24、夹爪转换前帧 80：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_jitter_controls.py \
+  --dataset-root /root/bayes-tmp/kuavo_dataset/task2_pick_apple_messy_lerobot/lerobot_v2.1 \
+  --episode 0 \
+  --frames 0,24,80 \
+  --repeat-count 10 \
+  --prompt "Pick up the apple from the table." \
+  --output-dir outputs/jitter/apple/controls_e0_e7
+```
+
+每个任务运行前必须启动对应 checkpoint 的 adapter server。输出 `summary.json` 和 `controls.npz`。E7 的 `pass_at_1e-7` 应为 true；E0 重点比较正常帧、异常边界帧和夹爪转换帧的 `repeat_deviation_l2`、`per_element_std` 与 `first_action_per_element_std`。
+
+#### Step 2：实施低风险配置和夹爪修正
+
+1. 默认设置 `execution_horizon=8`。
+2. 使用异步推理，并在动作开始前完成一次 warm-up。
+3. 记录 buffer 深度、空队列、hold-last-action 和 deadline miss；队列目标至少保有一个待执行 chunk。
+4. 夹爪使用独立的阈值 + 迟滞 + 状态锁存，不对夹爪做与手臂相同的连续轨迹滤波。
+
+#### Step 3：离线验证轻量跨 chunk 融合
+
+模型仍预测 16 步，但只执行 8 步。在新 chunk 到达时，将“上一 chunk 尚未执行的后 8 步”与“新 chunk 的前 8 步”做可配置的线性/cosine ramp 融合；先离线重算边界位置跳变和速度 cosine，再决定是否进入执行链路。融合不得修改已下发动作，也必须经过关节限位、速度和加速度检查。
+
+验收条件应相对未融合 h8 baseline 定义：
+
+- 两个任务的 arm-only boundary jump mean/P95 均下降；
+- velocity cosine 的 P05/median 上升；
+- chunk 内加速度 P95 不恶化；
+- first-action 与数据集 action 的误差没有显著增大；
+- h8 推理/融合总耗时仍显著低于 800 ms。
+
+#### Step 4：有真机后再检查类别 C/D
+
+恢复真机后，先用 `h8 + async + 夹爪状态机` 跑低速实验，同时记录 command-feedback、控制 tick 和 buffer。若预测/下发命令平滑但反馈仍抖动，再进入驱动控制、插值、增益、编码器和机械结构排查；若 jitter 与 buffer empty/hold 恢复重合，则处理类别 D，而不是继续平滑模型输出。
+
 ## 9. 参考资料
 
 - NVIDIA Isaac-GR00T：`getting_started/real_world_deployment.md`，章节 “Common Issues: Jittering and Stop-and-Go”。
