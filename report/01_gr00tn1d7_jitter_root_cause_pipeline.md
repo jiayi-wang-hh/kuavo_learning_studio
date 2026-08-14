@@ -561,6 +561,67 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 
 该命令不连接 adapter server，也不重新推理，只消费各目录中的 `chunks.npz`。输入标签由“父目录名 + 输入目录名”生成，例如 `bottle_offline_ep1_h08`，因此 Bottle 和 Apple 不会发生输出覆盖。汇总表每行包含 boundary mean/P95、velocity cosine 改变量、acceleration P95 和 first-action error，可直接用于跨 episode 比较。若尚未生成 episode 1/2，工具会明确报告缺失的 `chunks.npz`，不会静默跳过。
 
+#### 三 episode A/B/C/D 结果（2026-08-14）
+
+Bottle 和 Apple 的 episode 0/1/2 均已完成 h8 diagnostic，矩阵输出位于 `outputs/jitter/blending_matrix_h08`，共包含 24 组实验。下表为三个 episode 的相对变化/改变量的算术平均；负的 jump、acceleration 和 error 表示改善，正的 cosine 表示改善。
+
+| 任务 | 候选 | Boundary mean | Boundary P95 | Cosine P05 | Cosine median | Acceleration P95 | First-action error |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bottle | A | -44.8% | -43.6% | +0.104 | +0.061 | -11.2% | +3.9% |
+| Bottle | B | -48.8% | -44.9% | +0.046 | +0.100 | -15.2% | -5.7% |
+| Bottle | C | -40.2% | -35.3% | +0.081 | +0.098 | -13.9% | -9.9% |
+| Bottle | D | -48.8% | -44.9% | +0.054 | +0.059 | -19.9% | -5.7% |
+| Apple | A | -45.7% | -50.1% | -0.044 | +0.014 | -9.9% | +12.0% |
+| Apple | B | -42.9% | -46.5% | -0.013 | +0.067 | -13.3% | +3.0% |
+| Apple | C | -32.8% | -35.0% | +0.022 | +0.122 | -12.7% | -2.7% |
+| Apple | D | -42.9% | -46.5% | -0.010 | +0.092 | -18.7% | +3.0% |
+
+候选 B 在六个 episode 上都降低 boundary mean、boundary P95 和 acceleration P95，证明跨 chunk 融合对位置跳变的改善不是 episode 0 偶然现象。不过严格验收尚未全部通过：Bottle episode 1 的 cosine P05 下降 `0.199`，Bottle episode 2 的 cosine median 下降 `0.070`；Apple episode 1 的 cosine P05/median 分别下降 `0.240/0.040`，且 first-action error 增加 `14.6%`。B 的六 episode 逐项结果如下：
+
+| Episode | Boundary mean | Boundary P95 | Cosine P05 | Cosine median | Acceleration P95 | First-action error |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bottle 0 | -49.9% | -47.7% | +0.106 | +0.251 | -12.9% | -15.3% |
+| Bottle 1 | -50.3% | -38.4% | -0.199 | +0.118 | -16.7% | +8.1% |
+| Bottle 2 | -46.2% | -48.5% | +0.231 | -0.070 | -15.9% | -10.0% |
+| Apple 0 | -47.1% | -55.3% | +0.044 | +0.146 | -11.6% | -2.1% |
+| Apple 1 | -42.3% | -40.6% | -0.240 | -0.040 | -12.0% | +14.6% |
+| Apple 2 | -39.2% | -43.7% | +0.158 | +0.095 | -16.2% | -3.4% |
+
+结论：B 仍是强位置连续性候选，但不能按原标准直接进入默认实时配置。C 对新观测响应更强，在两个任务的平均 cosine 与 first-action error 上更稳定，代价是 boundary 降幅较小；D 与 B 的边界和 first-action 指标相同，并取得更低的 acceleration P95，但 Apple 的 cosine P05 仍略微退化。下一步应针对失败最明显的 Bottle episode 1、Apple episode 1 检查逐边界 CSV，判断 cosine 退化是少数静止/低速度边界造成的数值敏感性，还是实际方向反转；确认后再在 B/C/D 中选择实时候选。
+
+#### 逐边界速度与方向审计
+
+新增工具 `kuavo_server/tools/offline_blending_boundary_audit.py`。它读取矩阵中保存的 `blended_chunks.npz`，重新计算每个边界两侧的14维手臂速度范数和 cosine，并输出：
+
+- `boundary_audit.csv`：逐输入、候选、边界的速度、位置跳变、cosine delta、方向反转和严重退化标记；
+- `summary.json`：每个 episode 及每个任务的有效边界数、退化数、`delta <= -0.2` 严重退化数和方向反转数。
+
+默认仅当边界两侧速度范数均不低于 `0.01 rad/step` 时才解释 cosine。对现有矩阵运行后，104 个任务边界（Bottle 57、Apple 47）在 B/C/D 下全部超过该阈值，因此此前 cosine 退化不是静止边界的除零或低速数值噪声。
+
+| 任务 | 候选 | 有效边界 | Delta mean | Delta median | Delta P05 | 严重退化 | 方向反转 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bottle | B | 57 | +0.080 | +0.043 | -0.424 | 8 | 2 |
+| Bottle | C | 57 | +0.081 | +0.090 | -0.183 | 3 | 1 |
+| Bottle | D | 57 | +0.046 | +0.053 | -0.422 | 10 | 3 |
+| Apple | B | 47 | +0.034 | -0.006 | -0.322 | 7 | 2 |
+| Apple | C | 47 | +0.057 | +0.018 | -0.193 | 2 | 1 |
+| Apple | D | 47 | +0.027 | +0.013 | -0.343 | 7 | 4 |
+
+失败最明显的两个 episode 也证实是真实方向变化：Bottle episode 1 的 B boundary 1 cosine 从 `0.123` 变为 `-0.291`，同时位置跳变从 `0.2110` 降到 `0.0746`；Apple episode 1 的 boundary 14 从 `0.309` 变为 `-0.082`，位置跳变从 `0.0666` 降到 `0.0271`。融合在降低位置不连续的同时，个别边界会牺牲速度方向连续性。
+
+因此排除“低速 cosine 假退化”假设。固定 B 不再作为唯一推荐，D 也因严重退化和反转更多而排除；C 在两个任务上都只有较少的严重退化和方向反转，同时平均 first-action error 下降，作为进入实时链路前的首选保守候选。下一 pipeline 是先以 `cosine8-w0.50` 实现可开关的 arm-only runtime blending，保留未融合 h8 作为 safety baseline；真机低速验证必须同时记录 boundary position、velocity direction、command-feedback、deadline miss 和 buffer empty。若 C 仍出现可见停顿，再实现基于新旧 chunk 分歧的自适应 start weight，而不是继续使用固定更强融合。
+
+审计命令：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_blending_boundary_audit.py \
+  --matrix-dir outputs/jitter/blending_matrix_h08 \
+  --candidates B_cosine8_w025 C_cosine8_w050 D_linear8_w025 \
+  --min-velocity-norm 0.01 \
+  --output-dir outputs/jitter/blending_boundary_audit_h08
+```
+
 #### Step 4：有真机后再检查类别 C/D
 
 恢复真机后，先用 `h8 + async + 夹爪状态机` 跑低速实验，同时记录 command-feedback、控制 tick 和 buffer。若预测/下发命令平滑但反馈仍抖动，再进入驱动控制、插值、增益、编码器和机械结构排查；若 jitter 与 buffer empty/hold 恢复重合，则处理类别 D，而不是继续平滑模型输出。
