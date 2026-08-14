@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 from typing import Any
 import warnings
+import json
 
 from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
 from gr00t.data.dataset.sharded_single_step_dataset import extract_step_data
@@ -151,6 +152,121 @@ def parse_action_gr00t(action: dict[str, Any]) -> dict[str, Any]:
     return {f"action.{key}": action[key][0] for key in action}
 
 
+def _blend_weights(length: int, mode: str, start_weight: float) -> np.ndarray:
+    progress = np.linspace(0.0, 1.0, length)
+    if mode == "linear":
+        base = progress
+    elif mode == "cosine":
+        base = 0.5 - 0.5 * np.cos(np.pi * progress)
+    else:
+        raise ValueError(f"Unsupported chunk blend mode: {mode}")
+    return start_weight + (1.0 - start_weight) * base
+
+
+def _prepare_executed_chunk(
+    action_chunk: dict[str, np.ndarray],
+    previous_raw_chunk: dict[str, np.ndarray] | None,
+    action_keys: list[str],
+    *,
+    execution_horizon: int,
+    blend_mode: str,
+    blend_steps: int,
+    start_weight: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return flattened baseline/blended chunks while retaining raw model predictions."""
+    baseline_parts = []
+    blended_parts = []
+    for key in action_keys:
+        full_key = f"action.{key}"
+        current = np.asarray(action_chunk[full_key])
+        if current.ndim == 1:
+            current = current[:, None]
+        if current.shape[0] < execution_horizon:
+            raise ValueError(
+                f"Action {key} has horizon {current.shape[0]}, shorter than {execution_horizon}"
+            )
+        baseline = current[:execution_horizon].copy()
+        blended = baseline.copy()
+        if blend_mode != "none" and previous_raw_chunk is not None and "arm" in key.lower():
+            previous = np.asarray(previous_raw_chunk[full_key])
+            if previous.ndim == 1:
+                previous = previous[:, None]
+            effective_blend = min(
+                blend_steps,
+                execution_horizon,
+                previous.shape[0] - execution_horizon,
+            )
+            if effective_blend < 1:
+                raise ValueError(
+                    f"No previous tail available for {key}; model horizon must exceed execution horizon"
+                )
+            alpha = _blend_weights(effective_blend, blend_mode, start_weight)[:, None]
+            old_tail = previous[
+                execution_horizon : execution_horizon + effective_blend
+            ]
+            blended[:effective_blend] = (
+                (1.0 - alpha) * old_tail + alpha * baseline[:effective_blend]
+            )
+        baseline_parts.append(baseline)
+        blended_parts.append(blended)
+    return np.concatenate(baseline_parts, axis=-1), np.concatenate(blended_parts, axis=-1)
+
+
+def _apply_gripper_hysteresis(
+    chunks: np.ndarray,
+    action_keys: list[str],
+    action_widths: list[int],
+    *,
+    open_threshold: float,
+    close_threshold: float,
+) -> np.ndarray:
+    result = chunks.copy()
+    offset = 0
+    for key, width in zip(action_keys, action_widths):
+        if "gripper" in key.lower():
+            for dimension in range(offset, offset + width):
+                state = 1.0 if result[0, 0, dimension] >= 0.5 else 0.0
+                for chunk_index in range(result.shape[0]):
+                    for step_index in range(result.shape[1]):
+                        command = result[chunk_index, step_index, dimension]
+                        if command >= close_threshold:
+                            state = 1.0
+                        elif command <= open_threshold:
+                            state = 0.0
+                        result[chunk_index, step_index, dimension] = state
+        offset += width
+    return result
+
+
+def _trajectory_metrics(
+    chunks: np.ndarray,
+    ground_truth: np.ndarray,
+    arm_indices: np.ndarray,
+) -> dict[str, float]:
+    predicted = chunks.reshape(-1, chunks.shape[-1])[: len(ground_truth)]
+    arm = chunks[:, :, arm_indices]
+    boundary_jump = np.linalg.norm(arm[1:, 0] - arm[:-1, -1], axis=-1)
+    previous_velocity = arm[:-1, -1] - arm[:-1, -2]
+    next_velocity = arm[1:, 1] - arm[1:, 0]
+    cosine = np.sum(previous_velocity * next_velocity, axis=-1) / (
+        np.linalg.norm(previous_velocity, axis=-1)
+        * np.linalg.norm(next_velocity, axis=-1)
+        + 1e-8
+    )
+    acceleration = np.linalg.norm(np.diff(arm, n=2, axis=1), axis=-1)
+    return {
+        "mse": float(np.mean((ground_truth - predicted) ** 2)),
+        "mae": float(np.mean(np.abs(ground_truth - predicted))),
+        "arm_boundary_jump_mean": float(np.mean(boundary_jump)),
+        "arm_boundary_jump_p95": float(np.percentile(boundary_jump, 95)),
+        "arm_velocity_cosine_p05": float(np.percentile(cosine, 5)),
+        "arm_velocity_cosine_median": float(np.median(cosine)),
+        "arm_intra_chunk_acceleration_p95_per_step2": float(
+            np.percentile(acceleration, 95)
+        ),
+    }
+
+
 def evaluate_single_trajectory(
     policy: BasePolicy,
     loader: LeRobotEpisodeLoader,
@@ -160,6 +276,13 @@ def evaluate_single_trajectory(
     steps=300,
     action_horizon=16,
     save_plot_path=None,
+    chunk_blend_mode="none",
+    chunk_blend_steps=8,
+    new_chunk_start_weight=0.5,
+    gripper_hysteresis=False,
+    gripper_open_threshold=0.35,
+    gripper_close_threshold=0.65,
+    save_metrics_path=None,
 ):
     # Ensure steps doesn't exceed trajectory length
     traj = loader[traj_id]
@@ -169,7 +292,9 @@ def evaluate_single_trajectory(
         f"Using {actual_steps} steps (requested: {steps}, trajectory length: {traj_length})"
     )
 
-    pred_action_across_time = []
+    baseline_chunks = []
+    blended_chunks = []
+    previous_raw_chunk = None
 
     # Extract state and action keys separately and sort for consistent order
     state_keys = loader.modality_configs["state"].modality_keys
@@ -192,17 +317,18 @@ def evaluate_single_trajectory(
         parsed_obs = parse_observation_gr00t(obs, loader.modality_configs)
         _action_chunk, _ = policy.get_action(parsed_obs)
         action_chunk = parse_action_gr00t(_action_chunk)
-        for j in range(action_horizon):
-            # NOTE: concat_pred_action = action[f"action.{modality_keys[0]}"][j]
-            # the np.atleast_1d is to ensure the action is a 1D array, handle where single value is returned
-            concat_pred_action = np.concatenate(
-                [
-                    np.atleast_1d(np.atleast_1d(action_chunk[f"action.{key}"])[j])
-                    for key in action_keys
-                ],
-                axis=0,
-            )
-            pred_action_across_time.append(concat_pred_action)
+        baseline, blended = _prepare_executed_chunk(
+            action_chunk,
+            previous_raw_chunk,
+            action_keys,
+            execution_horizon=action_horizon,
+            blend_mode=chunk_blend_mode,
+            blend_steps=chunk_blend_steps,
+            start_weight=new_chunk_start_weight,
+        )
+        baseline_chunks.append(baseline)
+        blended_chunks.append(blended)
+        previous_raw_chunk = {key: np.asarray(value).copy() for key, value in action_chunk.items()}
 
     def extract_state_joints(traj: pd.DataFrame, columns: list[str]):
         np_dict = {}
@@ -215,16 +341,75 @@ def evaluate_single_trajectory(
     gt_action_across_time = extract_state_joints(traj, [f"action.{key}" for key in action_keys])[
         :actual_steps
     ]
-    pred_action_across_time = np.array(pred_action_across_time)[:actual_steps]
+    baseline_chunks = np.stack(baseline_chunks)
+    blended_chunks = np.stack(blended_chunks)
+    action_widths = []
+    for key in action_keys:
+        raw_action = np.asarray(action_chunk[f"action.{key}"])
+        action_widths.append(1 if raw_action.ndim == 1 else int(raw_action.shape[-1]))
+    if gripper_hysteresis:
+        baseline_chunks = _apply_gripper_hysteresis(
+            baseline_chunks,
+            action_keys,
+            action_widths,
+            open_threshold=gripper_open_threshold,
+            close_threshold=gripper_close_threshold,
+        )
+        blended_chunks = _apply_gripper_hysteresis(
+            blended_chunks,
+            action_keys,
+            action_widths,
+            open_threshold=gripper_open_threshold,
+            close_threshold=gripper_close_threshold,
+        )
+    pred_action_across_time = blended_chunks.reshape(-1, blended_chunks.shape[-1])[:actual_steps]
     assert gt_action_across_time.shape == pred_action_across_time.shape, (
         f"gt_action: {gt_action_across_time.shape}, pred_action: {pred_action_across_time.shape}"
     )
 
-    # calc MSE and MAE across time
-    mse = np.mean((gt_action_across_time - pred_action_across_time) ** 2)
-    mae = np.mean(np.abs(gt_action_across_time - pred_action_across_time))
+    arm_indices = []
+    offset = 0
+    for key, width in zip(action_keys, action_widths):
+        if "arm" in key.lower():
+            arm_indices.extend(range(offset, offset + width))
+        offset += width
+    if not arm_indices:
+        arm_indices = list(range(pred_action_across_time.shape[-1]))
+    arm_indices_array = np.asarray(arm_indices)
+    baseline_metrics = _trajectory_metrics(
+        baseline_chunks, gt_action_across_time, arm_indices_array
+    )
+    blended_metrics = _trajectory_metrics(
+        blended_chunks, gt_action_across_time, arm_indices_array
+    )
+    mse = blended_metrics["mse"]
+    mae = blended_metrics["mae"]
     logging.info(f"Unnormalized Action MSE across single traj: {mse}")
     logging.info(f"Unnormalized Action MAE across single traj: {mae}")
+    logging.info(f"Baseline metrics: {baseline_metrics}")
+    logging.info(f"Blended metrics: {blended_metrics}")
+    if save_metrics_path:
+        metrics_path = Path(save_metrics_path)
+        if len(loader) > 1:
+            metrics_path = metrics_path.with_name(
+                f"{metrics_path.stem}_traj{traj_id}{metrics_path.suffix or '.json'}"
+            )
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_path.open("w", encoding="utf-8") as stream:
+            json.dump(
+                {
+                    "trajectory_id": traj_id,
+                    "execution_horizon": action_horizon,
+                    "chunk_blend_mode": chunk_blend_mode,
+                    "chunk_blend_steps": chunk_blend_steps,
+                    "new_chunk_start_weight": new_chunk_start_weight,
+                    "gripper_hysteresis": gripper_hysteresis,
+                    "baseline": baseline_metrics,
+                    "blended": blended_metrics,
+                },
+                stream,
+                indent=2,
+            )
 
     logging.info(f"state_joints vs time {state_joints_across_time.shape}")
     logging.info(f"gt_action_joints vs time {gt_action_across_time.shape}")
@@ -262,7 +447,28 @@ class ArgsConfig:
     """List of trajectory IDs to evaluate."""
 
     action_horizon: int = 16
-    """Action horizon to evaluate."""
+    """Actions executed before the next inference (8 for candidate C)."""
+
+    chunk_blend_mode: str = "none"
+    """Cross-chunk arm blending: none, linear, or cosine."""
+
+    chunk_blend_steps: int = 8
+    """Number of overlap steps used for cross-chunk blending."""
+
+    new_chunk_start_weight: float = 0.5
+    """New prediction weight at the first blended step."""
+
+    gripper_hysteresis: bool = False
+    """Apply independent gripper hysteresis instead of arm blending."""
+
+    gripper_open_threshold: float = 0.35
+    """Gripper hysteresis open threshold."""
+
+    gripper_close_threshold: float = 0.65
+    """Gripper hysteresis close threshold."""
+
+    save_metrics_path: str | None = None
+    """Optional JSON path for baseline and blended metrics."""
 
     dataset_path: str = "demo_data/cube_to_bowl_5/"
     """Path to the dataset."""
@@ -287,6 +493,10 @@ def main(args: ArgsConfig):
     args.embodiment_tag = EmbodimentTag.resolve(args.embodiment_tag)
     # Set up logging
     logging.basicConfig(level=logging.INFO)
+    if args.chunk_blend_mode not in {"none", "linear", "cosine"}:
+        raise ValueError("chunk_blend_mode must be one of: none, linear, cosine")
+    if not 0.0 <= args.new_chunk_start_weight <= 1.0:
+        raise ValueError("new_chunk_start_weight must be in [0, 1]")
 
     # Download model checkpoint if it's an S3 path
     local_model_path = args.model_path
@@ -351,6 +561,13 @@ def main(args: ArgsConfig):
             steps=args.steps,
             action_horizon=args.action_horizon,
             save_plot_path=args.save_plot_path,
+            chunk_blend_mode=args.chunk_blend_mode,
+            chunk_blend_steps=args.chunk_blend_steps,
+            new_chunk_start_weight=args.new_chunk_start_weight,
+            gripper_hysteresis=args.gripper_hysteresis,
+            gripper_open_threshold=args.gripper_open_threshold,
+            gripper_close_threshold=args.gripper_close_threshold,
+            save_metrics_path=args.save_metrics_path,
         )
         logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
         all_mse.append(mse)

@@ -669,6 +669,41 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
 
 本阶段通过条件为：所有 `causal_reference_max_abs_error == 0`、所有 `deadline_miss_count == 0`、所有三类 `limit_violations == 0`。通过后下一代码步骤才是在 `real_async_test.py` 的推理 worker 和 action buffer 之间加入默认关闭的 arm-only blender；必须暴露 enable、blend mode、blend steps、start weight 和 gripper thresholds 配置，并保留原始 chunk/融合 chunk、buffer depth、deadline miss 与 hold-last-action 日志。
 
+#### 候选 C 的原生 open-loop eval
+
+`gr00t/eval/open_loop_eval.py` 已增加可选的跨 chunk 融合，同时默认 `chunk_blend_mode=none`，不改变上游原始用法。候选 C 配置为：
+
+- `action_horizon=8`：每8个数据集 timestep 重新取 observation 并推理；模型 checkpoint 仍输出16步；
+- `chunk_blend_mode=cosine`、`chunk_blend_steps=8`、`new_chunk_start_weight=0.50`；
+- 只对 modality key 名称含 `arm` 的输出融合，不依赖 Kuavo 固定下标；
+- 可选 gripper `[0.35, 0.65]` 迟滞，与手臂融合分离。
+
+同一次 eval 会保留相同 raw predictions 下的 baseline h8 与 blended C，并在日志和 JSON 中分别报告 MSE、MAE、arm boundary mean/P95、velocity cosine P05/median 与 chunk 内 acceleration P95。这样可以避免两次 diffusion 独立采样妨碍公平比较。图中的 predicted action 为候选 C 输出。
+
+Apple checkpoint 示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run python gr00t/eval/open_loop_eval.py \
+  --dataset-path /root/bayes-tmp/kuavo_dataset/task2_pick_apple_messy_lerobot/lerobot_v2.1 \
+  --embodiment-tag NEW_EMBODIMENT \
+  --model-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/grootn17-apple-pick-ac16-maxmin-2/checkpoint-30000 \
+  --traj-ids 0 1 2 \
+  --steps 400 \
+  --action-horizon 8 \
+  --chunk-blend-mode cosine \
+  --chunk-blend-steps 8 \
+  --new-chunk-start-weight 0.50 \
+  --gripper-hysteresis \
+  --gripper-open-threshold 0.35 \
+  --gripper-close-threshold 0.65 \
+  --save-metrics-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/open_loop_eval/grootn1d7_real/apple_pick/candidate_c_metrics.json \
+  --save-plot-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/open_loop_eval/grootn1d7_real/apple_pick/candidate_c.jpeg
+```
+
+当 dataset 包含多个 trajectory 时，metrics 文件自动增加 `_trajN` 后缀以避免覆盖，例如 `candidate_c_metrics_traj0.json`。当前 plot 参数仍沿用上游行为，多 trajectory 会写同一图片路径；若要保留每个 trajectory 的图，应分别运行每个 `--traj-ids N`。
+
+Open-loop 候选 C 的通过条件：两个任务至少3个 trajectory 上，blended MSE/MAE 相对同次 baseline 不显著恶化（建议平均增幅不超过5%），boundary mean/P95 下降，acceleration P95 不恶化，并人工检查关键夹取阶段的曲线。该测试仍为 teacher-forced，不能替代真机 closed-loop。
+
 #### Step 4：有真机后再检查类别 C/D
 
 恢复真机后，先用 `h8 + async + 夹爪状态机` 跑低速实验，同时记录 command-feedback、控制 tick 和 buffer。若预测/下发命令平滑但反馈仍抖动，再进入驱动控制、插值、增益、编码器和机械结构排查；若 jitter 与 buffer empty/hold 恢复重合，则处理类别 D，而不是继续平滑模型输出。
