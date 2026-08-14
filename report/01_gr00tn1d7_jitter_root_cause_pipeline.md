@@ -622,6 +622,53 @@ uv run --project kuavo_model/external_models/gr00tn1d7 \
   --output-dir outputs/jitter/blending_boundary_audit_h08
 ```
 
+#### 候选 C 的因果 runtime 回放
+
+新增工具 `kuavo_server/tools/offline_runtime_blending_replay.py`，用于在接入 ROS 执行链路前验证实现语义。它严格按 chunk 到达顺序运行，每次只保留上一条 raw 16-step prediction，用其未执行 tail 与当前 head 融合，不读取未来 chunk。手臂使用 `cosine8-w0.50`，夹爪仍使用独立迟滞状态机。工具同时完成：
+
+1. 与矩阵中候选 C 的离线结果逐元素比较，防止 runtime 实现与研究脚本不一致；
+2. 将记录的 adapter request latency 与 h8 的 `800 ms` 执行预算比较，首个请求视为执行前 warm-up；
+3. 将所有执行 chunk 串成 command replay，统计 arm-only step、velocity 和 acceleration；
+4. 按可配置诊断阈值报告超限次数，并输出逐请求 `timing.csv`。
+
+六个 episode 的回放结果：
+
+| Episode | 与候选 C 最大误差 | Latency P95 | Margin P05 | Deadline miss | 最大 step L2 | 最大 velocity L2/s | 最大 acceleration L2/s² | 阈值超限 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bottle 0 | 0.0 | 373.8 ms | 426.2 ms | 0 | 0.119 | 1.185 | 13.618 | 0 |
+| Bottle 1 | 0.0 | 414.6 ms | 385.4 ms | 0 | 0.154 | 1.535 | 17.794 | 0 |
+| Bottle 2 | 0.0 | 398.4 ms | 401.6 ms | 0 | 0.117 | 1.168 | 11.288 | 0 |
+| Apple 0 | 0.0 | 384.6 ms | 415.4 ms | 0 | 0.165 | 1.653 | 10.520 | 0 |
+| Apple 1 | 0.0 | 390.3 ms | 409.7 ms | 0 | 0.186 | 1.858 | 17.162 | 0 |
+| Apple 2 | 0.0 | 404.6 ms | 395.4 ms | 0 | 0.069 | 0.689 | 10.673 | 0 |
+
+本轮使用的诊断阈值为 arm step L2 `0.25 rad`、velocity L2 `2.5 rad/s`、acceleration L2 `25 rad/s²`。所有 episode 均为零超限，且第一步 warm-up 后没有 deadline miss。这证明候选 C 可以因果实现，且在记录 latency 下理论上有约 385–426 ms 的 P05 buffer margin。
+
+这些 L2 阈值只用于不同离线方案间的一致诊断，不等于 Kuavo 每个关节的硬件安全限制；记录 latency 也不包含真实 ROS 调度、网络抖动和控制器反馈。因此结果只允许进入“可开关、低速、有人监护”的真机验证，不能直接作为正常速度部署依据。
+
+回放命令：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_runtime_blending_replay.py \
+  --input-dir \
+    outputs/jitter/bottle/offline_ep0_h08 \
+    outputs/jitter/bottle/offline_ep1_h08 \
+    outputs/jitter/bottle/offline_ep2_h08 \
+    outputs/jitter/apple/offline_ep0_h08 \
+    outputs/jitter/apple/offline_ep1_h08 \
+    outputs/jitter/apple/offline_ep2_h08 \
+  --execution-horizon 8 \
+  --blend-steps 8 \
+  --blend-mode cosine \
+  --new-chunk-start-weight 0.50 \
+  --reference-matrix-dir outputs/jitter/blending_matrix_h08 \
+  --reference-candidate C_cosine8_w050 \
+  --output-dir outputs/jitter/runtime_replay_c_h08
+```
+
+本阶段通过条件为：所有 `causal_reference_max_abs_error == 0`、所有 `deadline_miss_count == 0`、所有三类 `limit_violations == 0`。通过后下一代码步骤才是在 `real_async_test.py` 的推理 worker 和 action buffer 之间加入默认关闭的 arm-only blender；必须暴露 enable、blend mode、blend steps、start weight 和 gripper thresholds 配置，并保留原始 chunk/融合 chunk、buffer depth、deadline miss 与 hold-last-action 日志。
+
 #### Step 4：有真机后再检查类别 C/D
 
 恢复真机后，先用 `h8 + async + 夹爪状态机` 跑低速实验，同时记录 command-feedback、控制 tick 和 buffer。若预测/下发命令平滑但反馈仍抖动，再进入驱动控制、插值、增益、编码器和机械结构排查；若 jitter 与 buffer empty/hold 恢复重合，则处理类别 D，而不是继续平滑模型输出。
