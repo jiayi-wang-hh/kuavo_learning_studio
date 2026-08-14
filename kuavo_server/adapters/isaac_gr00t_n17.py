@@ -269,6 +269,10 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             "which_arm": self.which_arm,
             "model_action_horizon": self.model.action_horizon,
             "execution_horizon": self.execution_horizon,
+            "video_keys": list(self.model.video_keys),
+            "state_keys": list(self.model.state_keys),
+            "action_keys": list(self.model.action_keys),
+            "language_key": self.model.language_key,
         }
 
     def reset(self) -> dict[str, Any]:

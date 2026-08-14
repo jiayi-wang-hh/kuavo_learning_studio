@@ -224,10 +224,14 @@ python kuavo_server/launch.py groot \
   --port 5555
 ```
 
-在加载了 LeRobot 0.5.2 的 Kuavo 环境中运行离线实验：
+在 GR00T N1.7 的 uv 环境中运行离线实验。工具复用 NVIDIA
+`gr00t.data.dataset.LeRobotEpisodeLoader`，与 `gr00t/eval/open_loop_eval.py`
+使用相同的数据加载路径，因此可以直接读取当前的 LeRobot v2.1 数据集，
+不需要安装 Hugging Face `lerobot` 包，也不需要将数据转换为 v3.0：
 
 ```bash
-python kuavo_server/tools/offline_jitter_diagnostic.py \
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_jitter_diagnostic.py \
   --dataset-root /absolute/path/to/lerobot \
   --episode 0 \
   --max-frames 100 \
@@ -240,6 +244,8 @@ python kuavo_server/tools/offline_jitter_diagnostic.py \
 工具默认令 dataset `stride = execution_horizon`。例如执行 horizon 为 8 时，第 0 帧产生 chunk 0，第 8 帧产生 chunk 1，并比较 `chunk0[7]` 与 `chunk1[0]`。这近似 receding-horizon 的边界，但下一观测仍来自示教轨迹。若要显式覆盖，可传 `--stride`；此时应确保 stride 与待模拟的执行步数语义一致。
 
 如果数据集元数据没有可靠 FPS，显式传入 `--fps 10`。如果 server metadata 无法提供 execution horizon，传入 `--execution-horizon 8`。
+
+若当前目录已经是 `kuavo_model/external_models/gr00tn1d7`，脚本路径应改为仓库根目录下的绝对路径，或先回到仓库根目录执行上述命令。运行前必须重启 adapter server，使新增的 modality metadata 和 `diagnose_action_chunk` 端点生效。
 
 ### 8.4 实验矩阵
 
