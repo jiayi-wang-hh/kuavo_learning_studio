@@ -14,6 +14,12 @@ import numpy as np
 
 KUAVO_ARM_INDICES = np.asarray([0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14])
 KUAVO_GRIPPER_INDICES = np.asarray([7, 15])
+CANDIDATE_MATRIX = (
+    ("A_cosine8_w000", "cosine", 8, 0.00),
+    ("B_cosine8_w025", "cosine", 8, 0.25),
+    ("C_cosine8_w050", "cosine", 8, 0.50),
+    ("D_linear8_w025", "linear", 8, 0.25),
+)
 
 
 def summarize(values: np.ndarray) -> dict[str, float | int | None]:
@@ -189,9 +195,133 @@ def write_boundary_csv(
         writer.writerows(rows)
 
 
+def evaluate_input(
+    *,
+    input_dir: Path,
+    output_dir: Path,
+    execution_horizon: int,
+    blend_steps: int,
+    blend_mode: str,
+    new_chunk_start_weight: float,
+    fps: float,
+    gripper_mode: str,
+    gripper_open_threshold: float,
+    gripper_close_threshold: float,
+) -> dict[str, Any]:
+    input_path = input_dir.expanduser().resolve() / "chunks.npz"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Missing diagnostic input: {input_path}")
+    source = np.load(input_path, allow_pickle=True)
+    predicted = np.asarray(source["kuavo_action_chunks"], dtype=np.float64)
+    dataset_action = np.asarray(source["dataset_action"], dtype=np.float64)
+    if predicted.shape[-1] != 16:
+        raise ValueError(f"Expected Kuavo 16-D actions, got {predicted.shape}")
+
+    baseline, blended = construct_executed_chunks(
+        predicted,
+        execution_horizon=execution_horizon,
+        blend_steps=blend_steps,
+        mode=blend_mode,
+        new_chunk_start_weight=new_chunk_start_weight,
+    )
+    baseline_switches = None
+    blended_switches = None
+    if gripper_mode == "hysteresis":
+        baseline, baseline_switches = apply_gripper_hysteresis(
+            baseline,
+            open_threshold=gripper_open_threshold,
+            close_threshold=gripper_close_threshold,
+        )
+        blended, blended_switches = apply_gripper_hysteresis(
+            blended,
+            open_threshold=gripper_open_threshold,
+            close_threshold=gripper_close_threshold,
+        )
+
+    baseline_metrics, baseline_rows = trajectory_metrics(baseline, dataset_action, fps=fps)
+    blended_metrics, blended_rows = trajectory_metrics(blended, dataset_action, fps=fps)
+    jump_before = baseline_metrics["arm_boundary_position_jump"]
+    jump_after = blended_metrics["arm_boundary_position_jump"]
+    cosine_before = baseline_metrics["arm_boundary_velocity_cosine"]
+    cosine_after = blended_metrics["arm_boundary_velocity_cosine"]
+    report = {
+        "experiment": {
+            "input_dir": str(input_dir.expanduser().resolve()),
+            "sample_count": int(predicted.shape[0]),
+            "model_horizon": int(predicted.shape[1]),
+            "execution_horizon": execution_horizon,
+            "blend_steps": min(blend_steps, execution_horizon, predicted.shape[1] - execution_horizon),
+            "blend_mode": blend_mode,
+            "new_chunk_start_weight": new_chunk_start_weight,
+            "fps": fps,
+            "gripper_mode": gripper_mode,
+            "gripper_open_threshold": gripper_open_threshold,
+            "gripper_close_threshold": gripper_close_threshold,
+        },
+        "baseline": baseline_metrics,
+        "blended": blended_metrics,
+        "comparison": {
+            "boundary_jump_mean_relative_change": relative_change(jump_before["mean"], jump_after["mean"]),
+            "boundary_jump_p95_relative_change": relative_change(jump_before["p95"], jump_after["p95"]),
+            "velocity_cosine_p05_change": None if cosine_before["p05"] is None or cosine_after["p05"] is None else float(cosine_after["p05"] - cosine_before["p05"]),
+            "velocity_cosine_median_change": None if cosine_before["median"] is None or cosine_after["median"] is None else float(cosine_after["median"] - cosine_before["median"]),
+        },
+        "gripper_switch_count": {"baseline": baseline_switches, "blended": blended_switches},
+    }
+
+    output_dir = output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_dir / "blended_chunks.npz",
+        baseline_executed_chunks=baseline,
+        blended_executed_chunks=blended,
+        dataset_action=dataset_action,
+        frame_indices=source["frame_indices"],
+    )
+    write_boundary_csv(output_dir / "boundary_comparison.csv", baseline_rows, blended_rows)
+    with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, ensure_ascii=False)
+    return report
+
+
+def aggregate_row(input_label: str, candidate: str, report: dict[str, Any]) -> dict[str, Any]:
+    baseline = report["baseline"]
+    blended = report["blended"]
+    comparison = report["comparison"]
+    return {
+        "input": input_label,
+        "candidate": candidate,
+        "blend_mode": report["experiment"]["blend_mode"],
+        "start_weight": report["experiment"]["new_chunk_start_weight"],
+        "boundary_mean_baseline": baseline["arm_boundary_position_jump"]["mean"],
+        "boundary_mean_blended": blended["arm_boundary_position_jump"]["mean"],
+        "boundary_mean_relative_change": comparison["boundary_jump_mean_relative_change"],
+        "boundary_p95_baseline": baseline["arm_boundary_position_jump"]["p95"],
+        "boundary_p95_blended": blended["arm_boundary_position_jump"]["p95"],
+        "boundary_p95_relative_change": comparison["boundary_jump_p95_relative_change"],
+        "velocity_cosine_p05_change": comparison["velocity_cosine_p05_change"],
+        "velocity_cosine_median_change": comparison["velocity_cosine_median_change"],
+        "acceleration_p95_baseline": baseline["arm_intra_chunk_acceleration"]["p95"],
+        "acceleration_p95_blended": blended["arm_intra_chunk_acceleration"]["p95"],
+        "first_action_error_mean_baseline": baseline["arm_first_action_vs_dataset_l2"]["mean"],
+        "first_action_error_mean_blended": blended["arm_first_action_vs_dataset_l2"]["mean"],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-dir", type=Path, required=True)
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="One or more offline_jitter_diagnostic output directories.",
+    )
+    parser.add_argument(
+        "--candidate-matrix",
+        action="store_true",
+        help="Evaluate the documented A/B/C/D blending matrix for every input directory.",
+    )
     parser.add_argument("--execution-horizon", type=int, default=8)
     parser.add_argument("--blend-steps", type=int, default=8)
     parser.add_argument("--blend-mode", choices=["linear", "cosine"], default="cosine")
@@ -214,102 +344,58 @@ def main() -> None:
     if not 0.0 <= args.new_chunk_start_weight <= 1.0:
         parser.error("--new-chunk-start-weight must be in [0,1]")
 
-    input_path = args.input_dir.expanduser().resolve() / "chunks.npz"
-    if not input_path.is_file():
-        parser.error(f"Missing diagnostic input: {input_path}")
-    source = np.load(input_path, allow_pickle=True)
-    predicted = np.asarray(source["kuavo_action_chunks"], dtype=np.float64)
-    dataset_action = np.asarray(source["dataset_action"], dtype=np.float64)
-    if predicted.shape[-1] != 16:
-        parser.error(f"Expected Kuavo 16-D actions, got {predicted.shape}")
-
-    baseline, blended = construct_executed_chunks(
-        predicted,
-        execution_horizon=args.execution_horizon,
-        blend_steps=args.blend_steps,
-        mode=args.blend_mode,
-        new_chunk_start_weight=args.new_chunk_start_weight,
-    )
-    baseline_switches = None
-    blended_switches = None
-    if args.gripper_mode == "hysteresis":
-        baseline, baseline_switches = apply_gripper_hysteresis(
-            baseline,
-            open_threshold=args.gripper_open_threshold,
-            close_threshold=args.gripper_close_threshold,
-        )
-        blended, blended_switches = apply_gripper_hysteresis(
-            blended,
-            open_threshold=args.gripper_open_threshold,
-            close_threshold=args.gripper_close_threshold,
-        )
-
-    baseline_metrics, baseline_rows = trajectory_metrics(
-        baseline, dataset_action, fps=args.fps
-    )
-    blended_metrics, blended_rows = trajectory_metrics(blended, dataset_action, fps=args.fps)
-    jump_before = baseline_metrics["arm_boundary_position_jump"]
-    jump_after = blended_metrics["arm_boundary_position_jump"]
-    cosine_before = baseline_metrics["arm_boundary_velocity_cosine"]
-    cosine_after = blended_metrics["arm_boundary_velocity_cosine"]
-    report = {
-        "experiment": {
-            "input_dir": str(args.input_dir.expanduser().resolve()),
-            "sample_count": int(predicted.shape[0]),
-            "model_horizon": int(predicted.shape[1]),
-            "execution_horizon": args.execution_horizon,
-            "blend_steps": min(
-                args.blend_steps,
-                args.execution_horizon,
-                predicted.shape[1] - args.execution_horizon,
-            ),
-            "blend_mode": args.blend_mode,
-            "new_chunk_start_weight": args.new_chunk_start_weight,
-            "fps": args.fps,
-            "gripper_mode": args.gripper_mode,
-            "gripper_open_threshold": args.gripper_open_threshold,
-            "gripper_close_threshold": args.gripper_close_threshold,
-        },
-        "baseline": baseline_metrics,
-        "blended": blended_metrics,
-        "comparison": {
-            "boundary_jump_mean_relative_change": relative_change(
-                jump_before["mean"], jump_after["mean"]
-            ),
-            "boundary_jump_p95_relative_change": relative_change(
-                jump_before["p95"], jump_after["p95"]
-            ),
-            "velocity_cosine_p05_change": (
-                None
-                if cosine_before["p05"] is None or cosine_after["p05"] is None
-                else float(cosine_after["p05"] - cosine_before["p05"])
-            ),
-            "velocity_cosine_median_change": (
-                None
-                if cosine_before["median"] is None or cosine_after["median"] is None
-                else float(cosine_after["median"] - cosine_before["median"])
-            ),
-        },
-        "gripper_switch_count": {
-            "baseline": baseline_switches,
-            "blended": blended_switches,
-        },
-    }
-
     output_dir = args.output_dir.expanduser().resolve()
+    if not args.candidate_matrix and len(args.input_dir) != 1:
+        parser.error("Multiple --input-dir values require --candidate-matrix")
+
+    if not args.candidate_matrix:
+        try:
+            report = evaluate_input(
+                input_dir=args.input_dir[0], output_dir=output_dir,
+                execution_horizon=args.execution_horizon, blend_steps=args.blend_steps,
+                blend_mode=args.blend_mode, new_chunk_start_weight=args.new_chunk_start_weight,
+                fps=args.fps, gripper_mode=args.gripper_mode,
+                gripper_open_threshold=args.gripper_open_threshold,
+                gripper_close_threshold=args.gripper_close_threshold,
+            )
+        except (FileNotFoundError, ValueError) as error:
+            parser.error(str(error))
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        print(f"Wrote blending evaluation to {output_dir}")
+        return
+
+    rows: list[dict[str, Any]] = []
+    used_labels: set[str] = set()
+    for input_dir in args.input_dir:
+        resolved = input_dir.expanduser().resolve()
+        label = f"{resolved.parent.name}_{resolved.name}"
+        if label in used_labels:
+            parser.error(f"Input label collision for {resolved}; use distinct parent/input names")
+        used_labels.add(label)
+        for candidate, mode, steps, weight in CANDIDATE_MATRIX:
+            candidate_output = output_dir / label / candidate
+            try:
+                report = evaluate_input(
+                    input_dir=resolved, output_dir=candidate_output,
+                    execution_horizon=args.execution_horizon, blend_steps=steps,
+                    blend_mode=mode, new_chunk_start_weight=weight,
+                    fps=args.fps, gripper_mode=args.gripper_mode,
+                    gripper_open_threshold=args.gripper_open_threshold,
+                    gripper_close_threshold=args.gripper_close_threshold,
+                )
+            except (FileNotFoundError, ValueError) as error:
+                parser.error(str(error))
+            rows.append(aggregate_row(label, candidate, report))
+            print(f"[{label}] {candidate} -> {candidate_output}")
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_dir / "blended_chunks.npz",
-        baseline_executed_chunks=baseline,
-        blended_executed_chunks=blended,
-        dataset_action=dataset_action,
-        frame_indices=source["frame_indices"],
-    )
-    write_boundary_csv(output_dir / "boundary_comparison.csv", baseline_rows, blended_rows)
-    with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, ensure_ascii=False)
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-    print(f"Wrote blending evaluation to {output_dir}")
+    with (output_dir / "aggregate_summary.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    with (output_dir / "aggregate_summary.json").open("w", encoding="utf-8") as stream:
+        json.dump({"candidate_matrix": CANDIDATE_MATRIX, "results": rows}, stream, indent=2)
+    print(f"Wrote {len(rows)} evaluations and aggregate summaries to {output_dir}")
 
 
 if __name__ == "__main__":

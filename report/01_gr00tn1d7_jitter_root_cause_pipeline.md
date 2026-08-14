@@ -524,6 +524,8 @@ python kuavo_server/tools/offline_chunk_blending_eval.py \
 
 夹爪迟滞状态机在 Bottle 左右夹爪各产生一次状态切换，在 Apple 仅右夹爪切换一次，没有出现 chatter。pilot 数据支持 `cosine + blend_steps=8 + new_chunk_start_weight=0.25` 作为下一候选，但离线 teacher-forced 指标不能替代真机安全验证。
 
+2026-08-14 将服务器输出重新传回本地后进行了复核。上传目录为 `outputs/jitter/jitter/{bottle,apple}`（传输时额外嵌套了一层 `jitter`）；其中 E0/E7、h4/h8/h16 的 `summary.json` 与本地已有结果逐字节一致。服务器生成的 `blended_h08_cosine_w025` 与本地重算结果除 `experiment.input_dir` 的绝对路径不同外，所有数值指标一致。因此上述 Bottle/Apple pilot 结果已经通过跨机器复现，目录层级重复不影响结论。此次上传仍只有 episode 0 和候选 B，不应被视为多 episode 参数验证。
+
 #### 下一轮离线实验
 
 为避免对单个 episode 过拟合，下一轮不再扫描所有组合，只比较以下候选，并扩展到每个任务至少3个 episodes：
@@ -536,6 +538,28 @@ python kuavo_server/tools/offline_chunk_blending_eval.py \
 | D | linear | 8 | 0.25 | 检查 ramp 形状敏感性 |
 
 每个 episode 选择同一 checkpoint、相同 prompt 和相同 h8 chunks。先运行 `offline_jitter_diagnostic.py --episode N` 生成输入，再运行本工具。若候选 B 在 Bottle/Apple 的至少3个 episodes 上持续满足上述验收条件，则进入执行链路实现；否则根据 first-action error 与 boundary cosine 选择 B/C，而不是盲目增加融合强度。
+
+工具现支持 `--candidate-matrix` 批量模式。`--input-dir` 后可一次传入多个由 `offline_jitter_diagnostic.py` 生成的目录；工具会对每个输入运行 A/B/C/D，在 `<output-dir>/<输入标签>/<候选>/` 保存单次结果，并在 output 根目录生成 `aggregate_summary.csv` 和 `aggregate_summary.json`。旧的单输入、单候选命令保持兼容。
+
+服务器上完成 episode 0/1/2 的 h8 diagnostic 后，可一次运行：
+
+```bash
+uv run --project kuavo_model/external_models/gr00tn1d7 \
+  python kuavo_server/tools/offline_chunk_blending_eval.py \
+  --input-dir \
+    outputs/jitter/bottle/offline_ep0_h08 \
+    outputs/jitter/bottle/offline_ep1_h08 \
+    outputs/jitter/bottle/offline_ep2_h08 \
+    outputs/jitter/apple/offline_ep0_h08 \
+    outputs/jitter/apple/offline_ep1_h08 \
+    outputs/jitter/apple/offline_ep2_h08 \
+  --candidate-matrix \
+  --execution-horizon 8 \
+  --gripper-mode hysteresis \
+  --output-dir outputs/jitter/blending_matrix_h08
+```
+
+该命令不连接 adapter server，也不重新推理，只消费各目录中的 `chunks.npz`。输入标签由“父目录名 + 输入目录名”生成，例如 `bottle_offline_ep1_h08`，因此 Bottle 和 Apple 不会发生输出覆盖。汇总表每行包含 boundary mean/P95、velocity cosine 改变量、acceleration P95 和 first-action error，可直接用于跨 episode 比较。若尚未生成 episode 1/2，工具会明确报告缺失的 `chunks.npz`，不会静默跳过。
 
 #### Step 4：有真机后再检查类别 C/D
 
