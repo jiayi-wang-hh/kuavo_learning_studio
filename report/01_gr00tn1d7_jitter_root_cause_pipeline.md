@@ -704,6 +704,85 @@ CUDA_VISIBLE_DEVICES=0 uv run python gr00t/eval/open_loop_eval.py \
 
 Open-loop 候选 C 的通过条件：两个任务至少3个 trajectory 上，blended MSE/MAE 相对同次 baseline 不显著恶化（建议平均增幅不超过5%），boundary mean/P95 下降，acceleration P95 不恶化，并人工检查关键夹取阶段的曲线。该测试仍为 teacher-forced，不能替代真机 closed-loop。
 
+#### 可配置的模型内部 RTC（实验性）
+
+官方 N1.7 `action_head` 已包含 RTC inpainting primitive，但原始 `Gr00tPolicy` 没有传递 `options`，也没有反馈上一轮 action。本分支已贯通以下链路：
+
+```text
+launcher.yaml / CLI
+  → IsaacGr00tN17Adapter
+  → Gr00tPolicy
+  → previous normalized action feedback
+  → action_head.get_action(..., options=rtc_options)
+```
+
+RTC 默认关闭。开启时，policy 保存上一轮模型输出的 normalized/padded action，下一轮直接注入 `collated_inputs["inputs"]["action"]`。该路径避免把已解码的 Kuavo 物理单位动作重新归一化，从而避免 absolute/relative action、padding 和 modality 顺序错误。第一轮没有 previous action，仍执行普通 diffusion；第二轮起才应用 RTC。`reset()`、关闭 RTC 或 episode 切换都会清空 feedback state。
+
+配置项位于 `configs/server/launcher.yaml` 的 `adapters.groot.args`：
+
+```yaml
+execution_horizon: 8
+enable_rtc: false
+rtc_overlap_steps: 8
+rtc_frozen_steps: 4
+rtc_ramp_rate: 2.0
+```
+
+含义：
+
+- `enable_rtc`：总开关，默认 `false`；
+- `rtc_overlap_steps`：用上一 normalized chunk 的末尾多少步初始化新 prediction；
+- `rtc_frozen_steps`：overlap 中完全不允许 diffusion 修改的前缀；10 Hz、约400 ms latency 的初始估计为4步；
+- `rtc_ramp_rate`：剩余 overlap 区域的指数 denoising-strength ramp，必须大于0。
+
+参数约束为 `0 <= frozen <= overlap <= model_action_horizon`。当前 checkpoint horizon 为16，因此这一实现是 `RTC-16 experimental`，不是 NVIDIA 推荐的 `horizon >= 32` 正式配置。不得同时打开 RTC 与候选 C post-hoc blending 做首轮对照，否则无法归因改善来源。
+
+先在 GR00T uv 环境运行 policy 配置/reset 测试：
+
+```bash
+uv run pytest tests/policy/test_gr00t_policy_rtc.py -q
+```
+
+启动 adapter server：
+
+```bash
+python kuavo_server/launch.py groot \
+  --execution_horizon 8 \
+  --enable_rtc \
+  --rtc_overlap_steps 8 \
+  --rtc_frozen_steps 4 \
+  --rtc_ramp_rate 2.0
+```
+
+也可以直接将 `launcher.yaml` 中 `enable_rtc` 改为 `true`，其余命令不变。启动日志和 `metadata` 必须显示：
+
+```text
+rtc_enabled=true overlap=8 frozen=4 ramp_rate=2.0
+```
+
+原生 open-loop RTC-16 单 trajectory 示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run python gr00t/eval/open_loop_eval.py \
+  --dataset-path /root/bayes-tmp/kuavo_dataset/task2_pick_apple_messy_lerobot/lerobot_v2.1 \
+  --embodiment-tag NEW_EMBODIMENT \
+  --model-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/grootn17-apple-pick-ac16-maxmin-2/checkpoint-30000 \
+  --traj-ids 0 \
+  --steps 400 \
+  --action-horizon 8 \
+  --enable-rtc \
+  --rtc-overlap-steps 8 \
+  --rtc-frozen-steps 4 \
+  --rtc-ramp-rate 2.0 \
+  --chunk-blend-mode none \
+  --save-metrics-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/open_loop_eval/grootn1d7_real/apple_pick/rtc16_o8_f4_r2.json \
+  --save-plot-path /root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/open_loop_eval/grootn1d7_real/apple_pick/rtc16_o8_f4_r2.jpeg
+```
+
+输出中的 `rtc_applied_count` 应等于推理 chunk 数减1。RTC 必须独立与 baseline h8、候选 C 比较 MSE/MAE、boundary jump、velocity cosine 和 acceleration；open-loop 通过后仍只能进入默认关闭的真机低速实验。若 RTC-16 明显抑制新观测响应或无法优于候选 C，再评估 action horizon 32 的 continuation fine-tuning，而不是仅修改 `delta_indices` 后直接部署。
+
+使用 adapter 的 `offline_jitter_diagnostic.py` 时，`chunks.npz` 还会保存逐请求 `rtc_applied` 布尔数组，`summary.json` 保存 `rtc_enabled` 和 `rtc_applied_count`。一个 episode 中第一请求必须为 false，后续请求应为 true；否则说明 RTC feedback 没有贯通或中途被 reset。
+
 #### Step 4：有真机后再检查类别 C/D
 
 恢复真机后，先用 `h8 + async + 夹爪状态机` 跑低速实验，同时记录 command-feedback、控制 tick 和 buffer。若预测/下发命令平滑但反馈仍抖动，再进入驱动控制、插值、增益、编码器和机械结构排查；若 jitter 与 buffer empty/hold 恢复重合，则处理类别 D，而不是继续平滑模型输出。

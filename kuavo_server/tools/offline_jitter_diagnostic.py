@@ -267,6 +267,7 @@ def main() -> None:
     dataset_indices: list[int] = []
     latencies_ms: list[float] = []
     raw_actions: list[dict[str, np.ndarray]] = []
+    rtc_applied: list[bool] = []
     video_keys = list(metadata["video_keys"])
     state_keys = list(metadata["state_keys"])
     action_keys = list(metadata["action_keys"])
@@ -299,6 +300,7 @@ def main() -> None:
         dataset_indices.append(frame_index)
         latencies_ms.append(elapsed_ms)
         raw_actions.append({key: _numpy(value) for key, value in response["raw_action_dict"].items()})
+        rtc_applied.append(bool(response.get("rtc_applied", False)))
 
     if len(chunks) < 2:
         raise RuntimeError(
@@ -333,6 +335,7 @@ def main() -> None:
         frame_indices=np.asarray(dataset_indices),
         request_latency_ms=np.asarray(latencies_ms),
         raw_action_dicts=raw_payload,
+        rtc_applied=np.asarray(rtc_applied, dtype=np.bool_),
     )
     write_csv(output_dir / "per_chunk.csv", per_chunk)
     write_csv(output_dir / "per_boundary.csv", per_boundary)
@@ -346,6 +349,8 @@ def main() -> None:
             "stride": stride,
             "fps": fps,
             "execution_horizon": execution_horizon,
+            "rtc_enabled": bool(metadata.get("rtc_enabled", False)),
+            "rtc_applied_count": int(sum(rtc_applied)),
             "offline_limit": "Cannot diagnose motor, controller, encoder, or mechanical vibration without robot feedback.",
         },
         "server_metadata": metadata,

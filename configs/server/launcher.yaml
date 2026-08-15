@@ -53,6 +53,10 @@ adapters:
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
       execution_horizon: 16                                   # receding horizon chunk size
+      enable_rtc: false                                       # true -> model-internal RTC; first inference is unconstrained
+      rtc_overlap_steps: 8                                    # previous normalized chunk tail used for inpainting
+      rtc_frozen_steps: 4                                     # fully frozen prefix; match measured inference latency in steps
+      rtc_ramp_rate: 2.0                                      # exponential denoising-strength ramp (> 0)
       device: cuda
       strict: false                                           # true 时开启严格 IO 检查
       model_repo_root: ""                                     # 留空 -> external_models/gr00tn1d7

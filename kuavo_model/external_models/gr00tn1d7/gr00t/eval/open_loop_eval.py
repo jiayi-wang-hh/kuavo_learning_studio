@@ -283,6 +283,10 @@ def evaluate_single_trajectory(
     gripper_open_threshold=0.35,
     gripper_close_threshold=0.65,
     save_metrics_path=None,
+    enable_rtc=False,
+    rtc_overlap_steps=8,
+    rtc_frozen_steps=4,
+    rtc_ramp_rate=2.0,
 ):
     # Ensure steps doesn't exceed trajectory length
     traj = loader[traj_id]
@@ -295,6 +299,18 @@ def evaluate_single_trajectory(
     baseline_chunks = []
     blended_chunks = []
     previous_raw_chunk = None
+    rtc_applied_count = 0
+    policy.reset()
+    inference_options = (
+        {
+            "enable_rtc": True,
+            "rtc_overlap_steps": rtc_overlap_steps,
+            "rtc_frozen_steps": rtc_frozen_steps,
+            "rtc_ramp_rate": rtc_ramp_rate,
+        }
+        if enable_rtc
+        else None
+    )
 
     # Extract state and action keys separately and sort for consistent order
     state_keys = loader.modality_configs["state"].modality_keys
@@ -315,7 +331,8 @@ def evaluate_single_trajectory(
         for language_key in loader.modality_configs["language"].modality_keys:
             obs[language_key] = data_point.text
         parsed_obs = parse_observation_gr00t(obs, loader.modality_configs)
-        _action_chunk, _ = policy.get_action(parsed_obs)
+        _action_chunk, action_info = policy.get_action(parsed_obs, options=inference_options)
+        rtc_applied_count += int(bool(action_info.get("rtc_applied", False)))
         action_chunk = parse_action_gr00t(_action_chunk)
         baseline, blended = _prepare_executed_chunk(
             action_chunk,
@@ -404,6 +421,11 @@ def evaluate_single_trajectory(
                     "chunk_blend_steps": chunk_blend_steps,
                     "new_chunk_start_weight": new_chunk_start_weight,
                     "gripper_hysteresis": gripper_hysteresis,
+                    "rtc_enabled": enable_rtc,
+                    "rtc_overlap_steps": rtc_overlap_steps,
+                    "rtc_frozen_steps": rtc_frozen_steps,
+                    "rtc_ramp_rate": rtc_ramp_rate,
+                    "rtc_applied_count": rtc_applied_count,
                     "baseline": baseline_metrics,
                     "blended": blended_metrics,
                 },
@@ -470,6 +492,18 @@ class ArgsConfig:
     save_metrics_path: str | None = None
     """Optional JSON path for baseline and blended metrics."""
 
+    enable_rtc: bool = False
+    """Enable model-internal RTC feedback after the first inference."""
+
+    rtc_overlap_steps: int = 8
+    """Previous normalized action steps used to initialize the new prediction."""
+
+    rtc_frozen_steps: int = 4
+    """RTC prefix steps that diffusion cannot modify."""
+
+    rtc_ramp_rate: float = 2.0
+    """Exponential denoising-strength ramp rate in the overlap region."""
+
     dataset_path: str = "demo_data/cube_to_bowl_5/"
     """Path to the dataset."""
 
@@ -497,6 +531,10 @@ def main(args: ArgsConfig):
         raise ValueError("chunk_blend_mode must be one of: none, linear, cosine")
     if not 0.0 <= args.new_chunk_start_weight <= 1.0:
         raise ValueError("new_chunk_start_weight must be in [0, 1]")
+    if args.enable_rtc and args.chunk_blend_mode != "none":
+        raise ValueError(
+            "Test RTC and post-hoc chunk blending separately; set chunk_blend_mode=none"
+        )
 
     # Download model checkpoint if it's an S3 path
     local_model_path = args.model_path
@@ -568,6 +606,10 @@ def main(args: ArgsConfig):
             gripper_open_threshold=args.gripper_open_threshold,
             gripper_close_threshold=args.gripper_close_threshold,
             save_metrics_path=args.save_metrics_path,
+            enable_rtc=args.enable_rtc,
+            rtc_overlap_steps=args.rtc_overlap_steps,
+            rtc_frozen_steps=args.rtc_frozen_steps,
+            rtc_ramp_rate=args.rtc_ramp_rate,
         )
         logging.info(f"MSE for trajectory {traj_id}: {mse}, MAE: {mae}")
         all_mse.append(mse)

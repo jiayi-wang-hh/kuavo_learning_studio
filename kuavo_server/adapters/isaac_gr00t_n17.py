@@ -154,6 +154,7 @@ class _Gr00tRuntime:
         self.action_dims = {
             key: int(norm_params["action"][key]["dim"].item()) for key in self.action_keys
         }
+        self.last_inference_info: dict[str, Any] = {}
 
     @staticmethod
     def _parse_embodiment_tag(raw: str, enum_cls: Any) -> Any:
@@ -171,12 +172,18 @@ class _Gr00tRuntime:
         known = ", ".join([item.name for item in enum_cls])
         raise ValueError(f"Unknown embodiment_tag `{raw}`. Available: {known}")
 
-    def infer(self, observation: dict[str, Any]) -> dict[str, np.ndarray]:
-        actions, _ = self.policy.get_action(observation)
+    def infer(
+        self,
+        observation: dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, np.ndarray]:
+        actions, info = self.policy.get_action(observation, options=options)
+        self.last_inference_info = dict(info)
         return actions
 
     def reset(self) -> None:
         self.policy.reset()
+        self.last_inference_info = {}
 
 
 @register_adapter
@@ -193,6 +200,10 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         execution_horizon: int | None,
         device: str,
         strict: bool,
+        enable_rtc: bool = False,
+        rtc_overlap_steps: int = 8,
+        rtc_frozen_steps: int = 4,
+        rtc_ramp_rate: float = 2.0,
     ) -> None:
         self.model_repo_root = _resolve_repo_root(model_repo_root)
         self.checkpoint = Path(checkpoint).expanduser().resolve()
@@ -201,6 +212,10 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
 
         self.which_arm = which_arm
         self.execution_horizon = execution_horizon
+        self.enable_rtc = enable_rtc
+        self.rtc_overlap_steps = rtc_overlap_steps
+        self.rtc_frozen_steps = rtc_frozen_steps
+        self.rtc_ramp_rate = rtc_ramp_rate
         self._pending_actions: list[np.ndarray] = []
         self._last_state16: np.ndarray = np.zeros(16, dtype=np.float32)
 
@@ -215,6 +230,18 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             device=device,
             strict=strict,
         )
+        if self.enable_rtc:
+            if not 0 < self.rtc_overlap_steps <= self.model.action_horizon:
+                raise ValueError(
+                    "--rtc_overlap_steps must be in "
+                    f"[1, {self.model.action_horizon}]"
+                )
+            if not 0 <= self.rtc_frozen_steps <= self.rtc_overlap_steps:
+                raise ValueError(
+                    "--rtc_frozen_steps must be in [0, --rtc_overlap_steps]"
+                )
+            if self.rtc_ramp_rate <= 0:
+                raise ValueError("--rtc_ramp_rate must be positive")
         print(
             f"[isaac-gr00t-n17] embodiment={self.model.embodiment_value} "
             f"state_keys={self.model.state_keys} action_keys={self.model.action_keys}",
@@ -224,6 +251,12 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             f"[isaac-gr00t-n17] model_action_chunk_size={self.model.action_horizon} "
             f"execution_steps={self.execution_horizon if self.execution_horizon is not None else self.model.action_horizon} "
             f"which_arm={self.which_arm}",
+            flush=True,
+        )
+        print(
+            f"[isaac-gr00t-n17] rtc_enabled={self.enable_rtc} "
+            f"overlap={self.rtc_overlap_steps} frozen={self.rtc_frozen_steps} "
+            f"ramp_rate={self.rtc_ramp_rate}",
             flush=True,
         )
 
@@ -244,6 +277,14 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         )
         parser.add_argument("--which_arm", type=str, default="both", choices=["left", "right", "both"])
         parser.add_argument("--execution_horizon", type=int, default=16, help="Number of actions to execute per chunk (receding horizon). Defaults to full model prediction.")
+        parser.add_argument(
+            "--enable_rtc",
+            action="store_true",
+            help="Enable stateful model-internal RTC inpainting. Disabled by default.",
+        )
+        parser.add_argument("--rtc_overlap_steps", type=int, default=8)
+        parser.add_argument("--rtc_frozen_steps", type=int, default=4)
+        parser.add_argument("--rtc_ramp_rate", type=float, default=2.0)
         parser.add_argument("--device", type=str, default="cuda", help="Torch device passed to Gr00tPolicy")
         parser.add_argument("--strict", action="store_true", help="Enable strict input/output checks in Gr00tPolicy")
 
@@ -255,6 +296,10 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             embodiment_tag=args.embodiment_tag,
             which_arm=args.which_arm,
             execution_horizon=args.execution_horizon,
+            enable_rtc=args.enable_rtc,
+            rtc_overlap_steps=args.rtc_overlap_steps,
+            rtc_frozen_steps=args.rtc_frozen_steps,
+            rtc_ramp_rate=args.rtc_ramp_rate,
             device=args.device,
             strict=args.strict,
         )
@@ -269,6 +314,10 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             "which_arm": self.which_arm,
             "model_action_horizon": self.model.action_horizon,
             "execution_horizon": self.execution_horizon,
+            "rtc_enabled": self.enable_rtc,
+            "rtc_overlap_steps": self.rtc_overlap_steps,
+            "rtc_frozen_steps": self.rtc_frozen_steps,
+            "rtc_ramp_rate": self.rtc_ramp_rate,
             "video_keys": list(self.model.video_keys),
             "state_keys": list(self.model.state_keys),
             "action_keys": list(self.model.action_keys),
@@ -279,6 +328,16 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         self._pending_actions.clear()
         self.model.reset()
         return {"status": "ok", "message": "adapter state cleared"}
+
+    def _inference_options(self) -> dict[str, Any] | None:
+        if not self.enable_rtc:
+            return None
+        return {
+            "enable_rtc": True,
+            "rtc_overlap_steps": self.rtc_overlap_steps,
+            "rtc_frozen_steps": self.rtc_frozen_steps,
+            "rtc_ramp_rate": self.rtc_ramp_rate,
+        }
 
     def _state_for_key(self, key: str, dim: int, kuavo_state16: np.ndarray) -> np.ndarray:
         left_arm = kuavo_state16[:7]
@@ -476,7 +535,7 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             return self._pending_actions.pop(0)
 
         model_obs = self._build_model_obs(obs)
-        action_dict = self.model.infer(model_obs)
+        action_dict = self.model.infer(model_obs, options=self._inference_options())
         if not isinstance(action_dict, dict):
             raise ValueError(f"Unexpected Isaac-GR00T-N17 output type: {type(action_dict)}")
 
@@ -493,7 +552,7 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
     def select_action_chunk(self, obs: dict[str, Any]) -> np.ndarray:
         self._pending_actions.clear()
         model_obs = self._build_model_obs(obs)
-        action_dict = self.model.infer(model_obs)
+        action_dict = self.model.infer(model_obs, options=self._inference_options())
         if not isinstance(action_dict, dict):
             raise ValueError(f"Unexpected Isaac-GR00T-N17 output type: {type(action_dict)}")
 
@@ -515,7 +574,7 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         """
         self._pending_actions.clear()
         model_obs = self._build_model_obs(obs)
-        action_dict = self.model.infer(model_obs)
+        action_dict = self.model.infer(model_obs, options=self._inference_options())
         if not isinstance(action_dict, dict):
             raise ValueError(f"Unexpected Isaac-GR00T-N17 output type: {type(action_dict)}")
 
@@ -532,4 +591,6 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
             "model_action_horizon": len(action_chunk),
             "execution_horizon": self.execution_horizon,
             "action_keys": list(self.model.action_keys),
+            "rtc_enabled": bool(self.model.last_inference_info.get("rtc_enabled", False)),
+            "rtc_applied": bool(self.model.last_inference_info.get("rtc_applied", False)),
         }

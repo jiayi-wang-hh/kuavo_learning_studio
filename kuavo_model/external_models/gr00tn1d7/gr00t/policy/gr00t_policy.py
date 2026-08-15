@@ -164,6 +164,37 @@ class Gr00tPolicy(BasePolicy):
         assert len(language_keys) >= 1, "At least one language key is required"
         assert len(language_delta_indices) == 1, "Only one language delta index is supported"
         self.language_key = language_keys[0]
+        # RTC feeds the previous model output back in normalized/padded model space.
+        # Keeping this state in the policy avoids an unsafe decode -> re-encode round trip.
+        self._rtc_previous_normalized_action: torch.Tensor | None = None
+
+    def _rtc_options(
+        self, options: dict[str, Any] | None
+    ) -> dict[str, int | float] | None:
+        if not options or not options.get("enable_rtc", False):
+            self._rtc_previous_normalized_action = None
+            return None
+
+        action_horizon = len(self.modality_configs["action"].delta_indices)
+        overlap = int(options.get("rtc_overlap_steps", 0))
+        frozen = int(options.get("rtc_frozen_steps", 0))
+        ramp_rate = float(options.get("rtc_ramp_rate", 0.0))
+        if not 0 < overlap <= action_horizon:
+            raise ValueError(
+                f"rtc_overlap_steps must be in [1, {action_horizon}], got {overlap}"
+            )
+        if not 0 <= frozen <= overlap:
+            raise ValueError(
+                f"rtc_frozen_steps must be in [0, rtc_overlap_steps], got {frozen}"
+            )
+        if ramp_rate <= 0:
+            raise ValueError(f"rtc_ramp_rate must be positive, got {ramp_rate}")
+        return {
+            "action_horizon": action_horizon,
+            "rtc_overlap_steps": overlap,
+            "rtc_frozen_steps": frozen,
+            "rtc_ramp_rate": ramp_rate,
+        }
 
     def _unbatch_observation(self, value: dict[str, Any]) -> list[dict[str, Any]]:
         """Unbatch a batched observation into a list of single observations.
@@ -403,10 +434,26 @@ class Gr00tPolicy(BasePolicy):
         collated_inputs = self.collate_fn(processed_inputs)
         collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
 
-        # Step 4: Run model inference to predict actions
+        # Step 4: Run model inference to predict actions. RTC is applied from the
+        # second call onward by feeding back the previous normalized model output.
+        rtc_options = self._rtc_options(options)
+        rtc_applied = False
+        if rtc_options is not None and self._rtc_previous_normalized_action is not None:
+            model_inputs = collated_inputs["inputs"]
+            batch_size = int(model_inputs["state"].shape[0])
+            previous = self._rtc_previous_normalized_action
+            if previous.shape[0] != batch_size:
+                raise ValueError(
+                    "RTC batch size changed without reset: "
+                    f"previous={previous.shape[0]}, current={batch_size}"
+                )
+            model_inputs["action"] = previous
+            rtc_applied = True
         with torch.inference_mode():
-            model_pred = self.model.get_action(**collated_inputs)
+            model_pred = self.model.get_action(**collated_inputs, options=rtc_options)
         normalized_action = model_pred["action_pred"].float()
+        if rtc_options is not None:
+            self._rtc_previous_normalized_action = normalized_action.detach().clone()
 
         # Step 5: Decode actions from normalized space back to physical units
         batched_states = {}
@@ -420,7 +467,10 @@ class Gr00tPolicy(BasePolicy):
         casted_action = {
             key: value.astype(np.float32) for key, value in unnormalized_action.items()
         }
-        return casted_action, {}
+        return casted_action, {
+            "rtc_enabled": rtc_options is not None,
+            "rtc_applied": rtc_applied,
+        }
 
     def check_action(self, action: dict[str, Any]) -> None:
         """Validate that the action has the correct structure and types.
@@ -479,7 +529,8 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Dictionary containing the info after resetting the policy
         """
-        return {}
+        self._rtc_previous_normalized_action = None
+        return {"rtc_state_cleared": True}
 
 
 class Gr00tSimPolicyWrapper(PolicyWrapper):
