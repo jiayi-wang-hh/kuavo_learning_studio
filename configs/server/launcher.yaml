@@ -49,13 +49,13 @@ adapters:
       mode: uv
       project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d7
     args:
-      checkpoint: /path/to/gr00t/checkpoint                   # 必填
+      checkpoint: /media/kuavo/TOSHIBA EXT/wjy/download/grootn17-bottle-pick/grootn17-bottle-pick-ac32-maxmin/checkpoint-40000           # 必填
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
       execution_horizon: 16                                   # receding horizon chunk size
-      enable_rtc: false                                       # true -> model-internal RTC; first inference is unconstrained
-      rtc_overlap_steps: 8                                    # previous normalized chunk tail used for inpainting
-      rtc_frozen_steps: 4                                     # fully frozen prefix; match measured inference latency in steps
+      enable_rtc: true                                       # true -> model-internal RTC; first inference is unconstrained
+      rtc_overlap_steps: 8                                  # previous normalized chunk tail used for inpainting
+      rtc_frozen_steps: 3                                     # 10 Hz: cover measured steady-state latency up to about 0.23 s
       rtc_ramp_rate: 2.0                                      # exponential denoising-strength ramp (> 0)
       device: cuda
       strict: false                                           # true 时开启严格 IO 检查

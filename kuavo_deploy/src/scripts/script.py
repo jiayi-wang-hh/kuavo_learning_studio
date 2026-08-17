@@ -399,6 +399,18 @@ class ArmMove:
         zero_angles = [0.0] * 14
         self._move_to_joint_angles(zero_angles)
 
+    def back_to_start(self) -> None:
+        """回到start_bag起始位, release gripper"""
+        time.sleep(1)
+        # to release the gripper
+        gripper_positions = np.concatenate([[0,0,0,0,0,0],[0,0,0,0,0,0]],axis=0)
+        self.env.qiangnao.control(gripper_positions)
+
+        # 移动到轨迹结束位置
+        end_angles = [float(j) for j in self.msg_dict_of_list.get("/kuavo_arm_traj", [])[-1].position]
+        end_angles = np.array(end_angles)/180*np.pi
+        self._move_to_joint_angles(end_angles)
+
     def go_run(self) -> None:
         """执行前往并运行"""
         self.go()
@@ -428,6 +440,7 @@ def parse_args():
   python scripts.py --task go_run --config /path/to/custom_config.yaml"               # 到达工作位置直接运行模型
   python scripts.py --task here_run --config /path/to/custom_config.yaml"             # 插值至bag的最后一帧状态开始运行
   python scripts.py --task back_to_zero --config /path/to/custom_config.yaml"         # 中断模型推理后，倒放bag包回到0位
+  python scripts.py --task back_to_start --config /path/to/custom_config.yaml"         #  倒放回到start位
 
 任务说明:
   go          - 先插值到bag第一帧的位置，再回放bag包前往工作位置
@@ -444,7 +457,7 @@ def parse_args():
         "--task", 
         type=str, 
         required=True,
-        choices=["go", "run", "go_run", "here_run", "back_to_zero"],
+        choices=["go", "run", "go_run", "here_run", "back_to_zero", "back_to_start"],
         help="要执行的任务类型"
     )
     
@@ -509,6 +522,7 @@ def main():
         "go_run": arm.go_run,           # 到达工作位置直接运行模型
         "here_run": arm.here_run,       # 从go_bag的最后一帧状态开始运行
         "back_to_zero": arm.back_to_zero, # 中断模型推理后，倒放bag包回到0位
+        "back_to_start": arm.back_to_start, #  回到 start_bag 起始位
     }
     
     # 执行任务

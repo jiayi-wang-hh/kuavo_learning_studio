@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
@@ -33,6 +33,39 @@ from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
 
 from .policy import BasePolicy, PolicyWrapper
 
+
+def _load_model_for_inference(model_dir: Path):
+    """Load a checkpoint and fail fast if any persisted weights are skipped."""
+    model_config = AutoConfig.from_pretrained(model_dir)
+    loaded = AutoModel.from_pretrained(
+        model_dir,
+        config=model_config,
+        output_loading_info=True,
+    )
+    if isinstance(loaded, tuple):
+        model, loading_info = loaded
+    else:
+        # Some tests and downstream callers patch AutoModel with a lightweight
+        # stand-in that ignores output_loading_info.
+        model, loading_info = loaded, {}
+
+    missing_keys = loading_info.get("missing_keys", [])
+    unexpected_keys = loading_info.get("unexpected_keys", [])
+    mismatched_keys = loading_info.get("mismatched_keys", [])
+    errors = []
+    if missing_keys:
+        errors.append(f"Missing keys ({len(missing_keys)}): {missing_keys}")
+    if unexpected_keys:
+        errors.append(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys}")
+    if mismatched_keys:
+        errors.append(f"Mismatched keys ({len(mismatched_keys)}): {mismatched_keys}")
+    if errors:
+        raise RuntimeError(
+            "Checkpoint weight mismatch during inference load for "
+            f"{model_dir}:\n" + "\n".join(errors)
+        )
+
+    return model
 
 def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
     """Recursively convert all floating point tensors in a nested structure to the given dtype.
@@ -318,7 +351,7 @@ class Gr00tPolicy(BasePolicy):
         # Validate each state stream defined in the modality config
         for state_key in self.modality_configs["state"].modality_keys:
             # Check that the expected state key exists in the observation
-            # (must happen before indexing — see video validation above)
+            # Must happen before indexing; see video validation above.
             assert state_key in observation["state"], (
                 f"State key '{state_key}' must be in observation"
             )
@@ -357,7 +390,7 @@ class Gr00tPolicy(BasePolicy):
         # Validate each language stream defined in the modality config
         for language_key in self.modality_configs["language"].modality_keys:
             # Check that the expected language key exists in the observation
-            # (must happen before indexing — see video validation above)
+            # Must happen before indexing; see video validation above.
             assert language_key in observation["language"], (
                 f"Language key '{language_key}' must be in observation"
             )
