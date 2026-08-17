@@ -212,6 +212,7 @@ class Gr00tPolicy(BasePolicy):
         overlap = int(options.get("rtc_overlap_steps", 0))
         frozen = int(options.get("rtc_frozen_steps", 0))
         ramp_rate = float(options.get("rtc_ramp_rate", 0.0))
+        previous_offset_raw = options.get("rtc_previous_offset")
         if not 0 < overlap <= action_horizon:
             raise ValueError(
                 f"rtc_overlap_steps must be in [1, {action_horizon}], got {overlap}"
@@ -222,12 +223,48 @@ class Gr00tPolicy(BasePolicy):
             )
         if ramp_rate <= 0:
             raise ValueError(f"rtc_ramp_rate must be positive, got {ramp_rate}")
-        return {
+        rtc_options: dict[str, int | float] = {
             "action_horizon": action_horizon,
             "rtc_overlap_steps": overlap,
             "rtc_frozen_steps": frozen,
             "rtc_ramp_rate": ramp_rate,
         }
+        if previous_offset_raw is not None:
+            previous_offset = int(previous_offset_raw)
+            if not 0 <= previous_offset <= action_horizon - overlap:
+                raise ValueError(
+                    "rtc_previous_offset must leave a complete overlap window: "
+                    f"offset={previous_offset}, overlap={overlap}, horizon={action_horizon}"
+                )
+            rtc_options["rtc_previous_offset"] = previous_offset
+        return rtc_options
+
+    @staticmethod
+    def _align_rtc_previous_action(
+        previous: torch.Tensor, rtc_options: dict[str, int | float]
+    ) -> tuple[torch.Tensor, int]:
+        """Place the physical-time-aligned prefix where the primitive reads its tail."""
+        action_horizon = int(rtc_options["action_horizon"])
+        overlap = int(rtc_options["rtc_overlap_steps"])
+        source_start = int(
+            rtc_options.get("rtc_previous_offset", action_horizon - overlap)
+        )
+        source_end = source_start + overlap
+        if previous.shape[1] < action_horizon:
+            raise ValueError(
+                "RTC previous action is shorter than its configured horizon: "
+                f"shape={tuple(previous.shape)}, horizon={action_horizon}"
+            )
+
+        # The low-level action head always reads [horizon-overlap:horizon].
+        # Preserve that API while copying the correctly aligned physical-time
+        # window into the location it consumes.
+        aligned = previous.clone()
+        destination_start = action_horizon - overlap
+        aligned[:, destination_start:action_horizon, :] = previous[
+            :, source_start:source_end, :
+        ]
+        return aligned, source_start
 
     def _unbatch_observation(self, value: dict[str, Any]) -> list[dict[str, Any]]:
         """Unbatch a batched observation into a list of single observations.
@@ -471,6 +508,7 @@ class Gr00tPolicy(BasePolicy):
         # second call onward by feeding back the previous normalized model output.
         rtc_options = self._rtc_options(options)
         rtc_applied = False
+        rtc_previous_offset = None
         if rtc_options is not None and self._rtc_previous_normalized_action is not None:
             model_inputs = collated_inputs["inputs"]
             batch_size = int(model_inputs["state"].shape[0])
@@ -480,7 +518,10 @@ class Gr00tPolicy(BasePolicy):
                     "RTC batch size changed without reset: "
                     f"previous={previous.shape[0]}, current={batch_size}"
                 )
-            model_inputs["action"] = previous
+            aligned_previous, rtc_previous_offset = self._align_rtc_previous_action(
+                previous, rtc_options
+            )
+            model_inputs["action"] = aligned_previous
             rtc_applied = True
         with torch.inference_mode():
             model_pred = self.model.get_action(**collated_inputs, options=rtc_options)
@@ -503,6 +544,7 @@ class Gr00tPolicy(BasePolicy):
         return casted_action, {
             "rtc_enabled": rtc_options is not None,
             "rtc_applied": rtc_applied,
+            "rtc_previous_offset": rtc_previous_offset,
         }
 
     def check_action(self, action: dict[str, Any]) -> None:

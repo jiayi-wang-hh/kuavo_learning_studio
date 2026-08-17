@@ -218,6 +218,9 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         self.rtc_ramp_rate = rtc_ramp_rate
         self._pending_actions: list[np.ndarray] = []
         self._last_state16: np.ndarray = np.zeros(16, dtype=np.float32)
+        self._next_chunk_id = 0
+        self._last_chunk_id: int | None = None
+        self._last_chunk_start_global_step: int | None = None
 
         print(f"[isaac-gr00t-n17] initializing adapter={self.name}", flush=True)
         print(f"[isaac-gr00t-n17] repo_root={self.model_repo_root}", flush=True)
@@ -327,17 +330,23 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
     def reset(self) -> dict[str, Any]:
         self._pending_actions.clear()
         self.model.reset()
+        self._next_chunk_id = 0
+        self._last_chunk_id = None
+        self._last_chunk_start_global_step = None
         return {"status": "ok", "message": "adapter state cleared"}
 
-    def _inference_options(self) -> dict[str, Any] | None:
+    def _inference_options(self, *, previous_offset: int | None = None) -> dict[str, Any] | None:
         if not self.enable_rtc:
             return None
-        return {
+        options: dict[str, Any] = {
             "enable_rtc": True,
             "rtc_overlap_steps": self.rtc_overlap_steps,
             "rtc_frozen_steps": self.rtc_frozen_steps,
             "rtc_ramp_rate": self.rtc_ramp_rate,
         }
+        if previous_offset is not None:
+            options["rtc_previous_offset"] = int(previous_offset)
+        return options
 
     def _state_for_key(self, key: str, dim: int, kuavo_state16: np.ndarray) -> np.ndarray:
         left_arm = kuavo_state16[:7]
@@ -563,6 +572,81 @@ class IsaacGr00tN17Adapter(ModelServerAdapter):
         if self.execution_horizon is not None:
             action_chunk = action_chunk[:self.execution_horizon]
         return np.stack([np.asarray(step) for step in action_chunk], axis=0)
+
+    def select_action_chunk_async(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a full chunk aligned to the request's physical trigger time."""
+        if not isinstance(payload, dict):
+            raise TypeError("Async chunk payload must be a dictionary")
+        obs = payload.get("observation")
+        context = payload.get("rtc_context") or {}
+        if not isinstance(obs, dict) or not isinstance(context, dict):
+            raise TypeError("Async chunk payload requires observation and rtc_context dictionaries")
+
+        if "trigger_global_step" not in context:
+            raise ValueError("RTC async request is missing trigger_global_step")
+        trigger_step = int(context["trigger_global_step"])
+        previous_chunk_id = context.get("previous_chunk_id")
+        previous_chunk_start = context.get("previous_chunk_start_global_step")
+        previous_offset = context.get("executed_offset_at_trigger")
+
+        if self._last_chunk_id is None:
+            if previous_chunk_id is not None:
+                raise ValueError(
+                    "Client referenced a previous chunk before the server produced one: "
+                    f"previous_chunk_id={previous_chunk_id}"
+                )
+            previous_offset = None
+        else:
+            if previous_chunk_id is None or int(previous_chunk_id) != self._last_chunk_id:
+                raise ValueError(
+                    "RTC chunk lineage mismatch: "
+                    f"client_previous={previous_chunk_id}, server_previous={self._last_chunk_id}"
+                )
+            if (
+                previous_chunk_start is None
+                or int(previous_chunk_start) != self._last_chunk_start_global_step
+            ):
+                raise ValueError(
+                    "RTC chunk time-origin mismatch: "
+                    f"client_start={previous_chunk_start}, "
+                    f"server_start={self._last_chunk_start_global_step}"
+                )
+            if previous_offset is None:
+                raise ValueError("RTC async request is missing executed_offset_at_trigger")
+            previous_offset = int(previous_offset)
+
+        self._pending_actions.clear()
+        model_obs = self._build_model_obs(obs)
+        action_dict = self.model.infer(
+            model_obs,
+            options=self._inference_options(previous_offset=previous_offset),
+        )
+        if not isinstance(action_dict, dict):
+            raise ValueError(f"Unexpected Isaac-GR00T-N17 output type: {type(action_dict)}")
+
+        action_chunk = self._convert_action_chunk(action_dict)
+        if not action_chunk:
+            raise ValueError("Isaac-GR00T-N17 returned empty action chunk.")
+
+        chunk_id = self._next_chunk_id
+        self._next_chunk_id += 1
+        self._last_chunk_id = chunk_id
+        self._last_chunk_start_global_step = trigger_step
+        return {
+            "actions": np.stack([np.asarray(step) for step in action_chunk], axis=0),
+            "chunk_id": chunk_id,
+            "chunk_start_global_step": trigger_step,
+            "trigger_global_step": trigger_step,
+            "previous_chunk_id": previous_chunk_id,
+            "rtc_previous_offset": previous_offset,
+            "execution_horizon": (
+                self.execution_horizon
+                if self.execution_horizon is not None
+                else len(action_chunk)
+            ),
+            "model_action_horizon": len(action_chunk),
+            "rtc_applied": bool(self.model.last_inference_info.get("rtc_applied", False)),
+        }
 
     def diagnose_action_chunk(self, obs: dict[str, Any]) -> dict[str, Any]:
         """Return an untruncated action chunk and intermediate model outputs.

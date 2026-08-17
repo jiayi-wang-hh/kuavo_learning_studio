@@ -5,9 +5,8 @@ from __future__ import annotations
 import datetime
 import time
 import traceback
-from collections import deque
 from pathlib import Path
-from threading import Condition, Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 import numpy as np
@@ -21,6 +20,7 @@ from lerobot_patches import custom_patches  # noqa: F401
 
 from kuavo_deploy.config import KuavoConfig
 from kuavo_deploy.kuavo_service.client import PolicyClient
+from kuavo_deploy.src.eval.async_action_buffer import ActionTimelineBuffer
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.utils.policy_loader import (
     inject_task_prompt,
@@ -49,50 +49,6 @@ def stop_callback(msg):
 
 pause_sub = rospy.Subscriber("/kuavo/pause_state", Bool, pause_callback, queue_size=10)
 stop_sub = rospy.Subscriber("/kuavo/stop_state", Bool, stop_callback, queue_size=10)
-
-
-class ActionChunkBuffer:
-    def __init__(self, maxlen: int):
-        self.maxlen = max(1, int(maxlen))
-        self._actions: deque[np.ndarray] = deque()
-        self._cond = Condition()
-
-    def clear(self) -> None:
-        with self._cond:
-            self._actions.clear()
-            self._cond.notify_all()
-
-    def qsize(self) -> int:
-        with self._cond:
-            return len(self._actions)
-
-    def put_chunk(self, actions: list[np.ndarray]) -> int:
-        with self._cond:
-            free = self.maxlen - len(self._actions)
-            for action in actions[:free]:
-                self._actions.append(action)
-            self._cond.notify_all()
-            return min(len(actions), max(0, free))
-
-    def get(self, timeout: float) -> np.ndarray | None:
-        deadline = time.monotonic() + timeout
-        with self._cond:
-            while not self._actions:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                self._cond.wait(timeout=remaining)
-            return self._actions.popleft()
-
-    def wait_for_size(self, size: int, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
-        with self._cond:
-            while len(self._actions) < size:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                self._cond.wait(timeout=remaining)
-            return True
 
 
 def setup_policy(pretrained_path, policy_type, device, task_prompt: str):
@@ -158,13 +114,15 @@ def inference_worker(
     policy,
     preprocessor,
     postprocessor,
-    buffer: ActionChunkBuffer,
+    buffer: ActionTimelineBuffer,
+    timeline_lock: Lock,
     stop_event: Event,
 ) -> None:
     cfg = config.inference
     policy_type = cfg.policy_type
     task_prompt = getattr(cfg, "task_prompt", "robot manipulation")
     low_watermark = max(0, int(cfg.async_low_watermark))
+    fallback_chunk_id = 0
 
     try:
         while not stop_event.is_set() and not rospy.is_shutdown():
@@ -178,21 +136,86 @@ def inference_worker(
                 time.sleep(0.005)
                 continue
 
-            start = time.time()
-            observation = env.get_obs()
+            # Capture the observation and timeline position between control
+            # steps. Recheck the watermark after acquiring the lock because the
+            # consumer may have advanced while this worker was waiting.
+            with timeline_lock:
+                if buffer.qsize() > low_watermark:
+                    continue
+                trigger = buffer.snapshot_trigger()
+                observation = env.get_obs()
             if policy_type != "client":
                 observation = inject_task_prompt(observation, task_prompt)
             observation = preprocessor(observation)
 
+            start = time.time()
             with torch.inference_mode():
-                actions = _select_action_chunk(policy, observation)
-            actions_np = _postprocess_chunk(actions, postprocessor)
-            inserted = buffer.put_chunk(actions_np)
+                if hasattr(policy, "select_action_chunk_async"):
+                    response = policy.select_action_chunk_async(
+                        observation, trigger.as_request_context()
+                    )
+                else:
+                    response = {
+                        "actions": _select_action_chunk(policy, observation),
+                        "chunk_id": fallback_chunk_id,
+                        "chunk_start_global_step": trigger.trigger_global_step,
+                        "previous_chunk_id": trigger.previous_chunk_id,
+                        "rtc_previous_offset": trigger.executed_offset_at_trigger,
+                    }
+                    fallback_chunk_id += 1
+
+            if not isinstance(response, dict) or "actions" not in response:
+                raise ValueError("Async inference must return actions plus chunk metadata")
+            actions_np = _postprocess_chunk(response["actions"], postprocessor)
+            execution_horizon = int(response.get("execution_horizon", len(actions_np)))
+            chunk_id = int(response["chunk_id"])
+            chunk_start = int(response["chunk_start_global_step"])
+            if chunk_start != trigger.trigger_global_step:
+                raise ValueError(
+                    "Async response changed the chunk time origin: "
+                    f"trigger={trigger.trigger_global_step}, response_start={chunk_start}"
+                )
+            response_previous_chunk_id = response.get("previous_chunk_id")
+            response_previous_offset = response.get("rtc_previous_offset")
+            if response_previous_chunk_id != trigger.previous_chunk_id:
+                raise ValueError(
+                    "Async response changed chunk lineage: "
+                    f"trigger_previous={trigger.previous_chunk_id}, "
+                    f"response_previous={response_previous_chunk_id}"
+                )
+            if response_previous_offset != trigger.executed_offset_at_trigger:
+                raise ValueError(
+                    "RTC response used a different physical-time offset: "
+                    f"trigger_offset={trigger.executed_offset_at_trigger}, "
+                    f"rtc_offset={response_previous_offset}"
+                )
+
+            with timeline_lock:
+                merge = buffer.replace_with_chunk(
+                    actions_np,
+                    chunk_id=chunk_id,
+                    chunk_start_global_step=chunk_start,
+                    execution_horizon=execution_horizon,
+                )
             elapsed = time.time() - start
             log_model.info(
-                f"Async chunk ready: produced={len(actions_np)}, inserted={inserted}, "
+                f"Async chunk ready: chunk_id={chunk_id}, produced={len(actions_np)}, "
+                f"inserted={merge.inserted}, trigger_step={trigger.trigger_global_step}, "
+                f"ready_step={merge.ready_global_step}, stale={merge.stale}, "
+                f"previous_chunk_id={trigger.previous_chunk_id}, "
+                f"previous_offset={trigger.executed_offset_at_trigger}, "
+                f"rtc_applied={response.get('rtc_applied')}, "
+                f"first_new_offset={merge.first_chunk_offset}, "
                 f"buffer={buffer.qsize()}, time={elapsed:.3f}s"
             )
+            if merge.inserted == 0:
+                log_model.error(
+                    f"Async chunk {chunk_id} is fully stale; stopping instead of "
+                    f"advancing server/client chunk lineage: stale={merge.stale}, "
+                    f"produced={len(actions_np)}"
+                )
+                stop_event.set()
+                break
     except Exception:
         log_model.error("Async inference worker failed:\n" + traceback.format_exc())
         stop_event.set()
@@ -201,13 +224,13 @@ def inference_worker(
 def control_worker(
     *,
     env,
-    buffer: ActionChunkBuffer,
+    buffer: ActionTimelineBuffer,
+    timeline_lock: Lock,
     stop_event: Event,
     max_steps: int,
     action_timeout: float,
 ) -> int:
     step = 0
-    last_action = None
     try:
         with tqdm(total=max_steps, desc="Async episode", unit="step", leave=False) as pbar:
             while step < max_steps and not stop_event.is_set() and not rospy.is_shutdown():
@@ -218,17 +241,19 @@ def control_worker(
                     stop_event.set()
                     break
 
-                action = buffer.get(timeout=action_timeout)
-                if action is None:
-                    if last_action is None:
-                        log_model.error("No action available before timeout; stopping async rollout.")
-                        stop_event.set()
-                        break
-                    log_model.warning("No fresh action available; holding last action for one step.")
-                    action = last_action
+                if not buffer.wait_for_action(timeout=action_timeout):
+                    log_model.error(
+                        "No time-aligned action available before timeout; stopping async rollout."
+                    )
+                    stop_event.set()
+                    break
 
-                env.step(action)
-                last_action = action
+                with timeline_lock:
+                    entry = buffer.pop_next()
+                    if entry is None:
+                        continue
+                    env.step(entry.action)
+                    buffer.mark_step_executed()
                 step += 1
                 pbar.update(1)
     except Exception:
@@ -277,7 +302,8 @@ def kuavo_eval_async(config: KuavoConfig, env) -> None:
         policy.reset()
         env.reset(seed=episode + cfg.start_seed)
 
-        buffer = ActionChunkBuffer(maxlen=cfg.async_buffer_size)
+        buffer = ActionTimelineBuffer(maxlen=cfg.async_buffer_size)
+        timeline_lock = Lock()
         stop_event = Event()
         infer_thread = Thread(
             target=inference_worker,
@@ -288,6 +314,7 @@ def kuavo_eval_async(config: KuavoConfig, env) -> None:
                 "preprocessor": preprocessor,
                 "postprocessor": postprocessor,
                 "buffer": buffer,
+                "timeline_lock": timeline_lock,
                 "stop_event": stop_event,
             },
             daemon=True,
@@ -302,6 +329,7 @@ def kuavo_eval_async(config: KuavoConfig, env) -> None:
         steps = control_worker(
             env=env,
             buffer=buffer,
+            timeline_lock=timeline_lock,
             stop_event=stop_event,
             max_steps=cfg.max_episode_steps,
             action_timeout=cfg.async_action_timeout,

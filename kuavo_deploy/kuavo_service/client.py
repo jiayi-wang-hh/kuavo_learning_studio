@@ -224,6 +224,13 @@ class ExternalRobotInferenceClient(BaseInferenceClient):
         if isinstance(response, dict) and response.get("error"):
             raise RuntimeError(f"{response['error']} | request_keys={list(observations.keys())}")
         return response
+
+    def select_action_chunk_async(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Get a time-aligned chunk plus scheduling metadata."""
+        response = self.call_endpoint("select_action_chunk_async", payload)
+        if isinstance(response, dict) and response.get("error"):
+            raise RuntimeError(f"{response['error']} | payload_keys={list(payload.keys())}")
+        return response
         
 
 # policy client
@@ -286,6 +293,19 @@ class PolicyClient:
                 raise
             actions = self.policy.select_action(self._prepare_obs(obs_dict))
         return self._to_action_chunk_tensor(actions)
+
+    def select_action_chunk_async(self, obs_dict, rtc_context: Dict[str, Any]):
+        payload = {
+            "observation": self._prepare_obs(obs_dict),
+            "rtc_context": dict(rtc_context),
+        }
+        response = self.policy.select_action_chunk_async(payload)
+        if not isinstance(response, dict) or "actions" not in response:
+            raise ValueError("Async chunk response must contain an `actions` field")
+        return {
+            **response,
+            "actions": self._to_action_chunk_tensor(response["actions"]),
+        }
 
     def predict_action_chunk(self, obs_dict):
         return self.select_action_chunk(obs_dict)

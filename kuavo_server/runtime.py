@@ -110,6 +110,11 @@ class ModelInferenceServer(BaseInferenceServer):
         self.register_endpoint("reset", adapter.reset, requires_input=False)
         self.register_endpoint("select_action", adapter.select_action, requires_input=True)
         self.register_endpoint("select_action_chunk", adapter.select_action_chunk, requires_input=True)
+        select_action_chunk_async = getattr(adapter, "select_action_chunk_async", None)
+        if callable(select_action_chunk_async):
+            self.register_endpoint(
+                "select_action_chunk_async", select_action_chunk_async, requires_input=True
+            )
         diagnose_action_chunk = getattr(adapter, "diagnose_action_chunk", None)
         if callable(diagnose_action_chunk):
             self.register_endpoint("diagnose_action_chunk", diagnose_action_chunk, requires_input=True)
