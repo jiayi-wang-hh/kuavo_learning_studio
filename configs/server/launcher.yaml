@@ -49,7 +49,7 @@ adapters:
       mode: uv
       project: ${REPO_ROOT}/kuavo_model/external_models/gr00tn1d7
     args:
-      checkpoint: /path/to/gr00t/checkpoint                   # 必填
+      checkpoint: /media/kuavo/TOSHIBA EXT/wjy/download/grootn17-apple-pick/ac16-maxmin-2/checkpoint-20000           # 必填
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
       execution_horizon: 16                                   # receding horizon chunk size

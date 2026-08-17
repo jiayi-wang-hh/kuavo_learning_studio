@@ -224,6 +224,9 @@ def print_task_menu(config_path="<config_path>", use_color=True):
         ("go", "普通任务: 先插值到bag第一帧的位置, 再回放bag包前往工作位置"),
         ("run", "普通任务: 从当前位置直接运行模型"),
         ("auto_test", "自动测试任务：仿真中自动测试模型，执行 eval_episodes 次"),
+        ("back_to_zero", "普通任务: 回到零位"),
+        ("back_to_start", "普通任务: 回到 start_bag 起始位"),
+        ("offline_bag", "离线任务：从一条 bag 读取 obs，跑完整推理链路并和 bag action 做误差验证"),
         ("退出", ""),
     ]
 
@@ -287,7 +290,7 @@ def main():
     while True:
         print_task_menu(config_path=config_path, use_color=True)
 
-        sub_choice = input("请选择要执行的示例 (1-4): ").strip()
+        sub_choice = input("请选择要执行的示例 (1-7): ").strip()
 
         def start_task(cmd):
             global current_proc
@@ -304,6 +307,12 @@ def main():
         elif sub_choice == "3":
             start_task(["python3", str(auto_test), "--task", "auto_test", "--config", config_path])
         elif sub_choice == "4":
+            start_task(["python3", str(script), "--task", "back_to_zero", "--config", config_path])
+        elif sub_choice == "5":
+            start_task(["python3", str(script), "--task", "back_to_start", "--config", config_path])
+        elif sub_choice == "6":
+            bag_path = input("请输入 bag 路径（留空则使用 inference.go_bag_path): ").strip()
+        elif sub_choice == "7":
             print("退出")
             break
         else:
