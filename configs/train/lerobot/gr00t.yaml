@@ -8,7 +8,7 @@ dataset:  # 数据集相关设置。
 training:  # 训练流程设置。
   resume: false  # 是否从 output_dir 最新 checkpoint 继续训；续训改为 true，并修改 output_dir 为上阶段 run 的产物路径，如 outputs/train/gr00t_YYYYMMDD_HHMMSS。
   output_dir: "outputs/train/gr00t"  # 训练输出目录。
-  job_name: "gr00t"  # 实验名。
+  job_name: "gr00tn17-package-pick-and-place"  # 实验名。
   batch_size: 8  # 每张卡上的 batch size。
   steps: 10000  # 总训练步数。
   save_freq: 1000  # 每隔多少步存一次权重。

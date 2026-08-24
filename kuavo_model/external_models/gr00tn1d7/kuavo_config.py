@@ -27,7 +27,7 @@ kuavo_config = {
         ],
     ),
     "action": ModalityConfig(
-        delta_indices=list(range(0, 16)),
+        delta_indices=list(range(0, 40)),
         modality_keys=[
             "left_arm",
             "left_gripper",

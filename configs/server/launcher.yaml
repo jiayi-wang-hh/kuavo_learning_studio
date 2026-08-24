@@ -52,9 +52,9 @@ adapters:
       checkpoint: /media/kuavo/TOSHIBA EXT/wjy/download/grootn17-bottle-pick/grootn17-bottle-pick-ac32-maxmin/checkpoint-40000           # 必填
       embodiment_tag: NEW_EMBODIMENT                          # 或 new_embodiment
       which_arm: both
-      execution_horizon: 16                                   # receding horizon chunk size
+      execution_horizon: 32                                  # receding horizon chunk size
       enable_rtc: true                                       # true -> model-internal RTC; first inference is unconstrained
-      rtc_overlap_steps: 8                                  # previous normalized chunk window aligned by physical timestep
+      rtc_overlap_steps: 16                                  # previous normalized chunk window aligned by physical timestep
       rtc_frozen_steps: 3                                     # model-internal denoising constraint; async staleness is handled by the executor
       rtc_ramp_rate: 2.0                                      # exponential denoising-strength ramp (> 0)
       device: cuda

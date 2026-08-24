@@ -208,6 +208,7 @@ __marimo__/
 
 # log
 *log.txt
+wandb/
 ossutil_output/
 .sumi/
 env.sh
