@@ -435,6 +435,38 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Save the huggingface format weights to the last checkpoint dir."},
     )
+    max_checkpoints_to_keep: int = field(
+        default=5,
+        metadata={"help": "Maximum number of distributed checkpoints to keep. Values <= 0 disable pruning."},
+    )
+    use_lora: bool = field(
+        default=False,
+        metadata={"help": "Enable lightweight LoRA fine-tuning for selected Linear layers."},
+    )
+    lora_rank: int = field(
+        default=16,
+        metadata={"help": "LoRA rank."},
+    )
+    lora_alpha: int = field(
+        default=32,
+        metadata={"help": "LoRA alpha."},
+    )
+    lora_dropout: float = field(
+        default=0.05,
+        metadata={"help": "LoRA dropout probability."},
+    )
+    lora_target_modules: str = field(
+        default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+        metadata={"help": "Comma-separated leaf Linear module names to wrap with LoRA."},
+    )
+    lora_target_scope: str = field(
+        default="model.qwenvl_with_expert.qwen_expert.model.layers",
+        metadata={"help": "Comma-separated module-name scopes where LoRA can be injected."},
+    )
+    lora_trainable_modules: str = field(
+        default="model.state_proj,model.action_in_proj,model.action_out_proj,model.action_time_mlp_in,model.action_time_mlp_out,model.time_mlp_in,model.time_mlp_out",
+        metadata={"help": "Comma-separated module-name patterns that stay trainable together with LoRA weights."},
+    )
     seed: int = field(
         default=42,
         metadata={"help": "Random seed."},

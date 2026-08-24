@@ -2,6 +2,7 @@ import json
 from copy import deepcopy
 import os
 import re
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -29,6 +30,7 @@ from lingbotvla.optim import build_lr_scheduler, build_optimizer
 from lingbotvla.utils import helper
 from lingbotvla.utils.arguments import DataArguments, ModelArguments, TrainingArguments, parse_args, save_args
 from lingbotvla.utils.dist_utils import all_reduce
+from lingbotvla.utils.lora_utils import add_lora_to_model, count_trainable_parameters, mark_only_lora_and_modules_trainable
 
 from lingbotvla.models.vla.vision_models.module_utils import build_depth_model, get_depth_target, log_depth
 
@@ -46,6 +48,23 @@ def get_param_groups(model: "torch.nn.Module", default_lr: float, vit_lr: float)
                 other_params.append(param)
 
     return [{"params": vit_params, "lr": vit_lr}, {"params": other_params, "lr": default_lr}]
+
+
+def prune_checkpoints(checkpoint_dir: str, max_to_keep: int):
+    if max_to_keep <= 0 or not os.path.isdir(checkpoint_dir):
+        return
+
+    pattern = re.compile(r"global_step_(\d+)")
+    checkpoints = []
+    for dirname in os.listdir(checkpoint_dir):
+        match = pattern.fullmatch(dirname)
+        if match:
+            checkpoints.append((int(match.group(1)), os.path.join(checkpoint_dir, dirname)))
+    checkpoints.sort(key=lambda item: item[0], reverse=True)
+
+    for step, path in checkpoints[max_to_keep:]:
+        shutil.rmtree(path, ignore_errors=True)
+        logger.info_rank0(f"Pruned old checkpoint global_step_{step}: {path}")
 
 
 @dataclass
@@ -113,6 +132,38 @@ def main():
             moge_model = torch.compile(moge_model)
             morgbd_model = torch.compile(morgbd_model)
         os.makedirs(args.train.align_params['visual_dir'], exist_ok=True)
+
+    if args.train.use_lora:
+        injected_count, injected_names = add_lora_to_model(
+            model,
+            lora_rank=args.train.lora_rank,
+            lora_alpha=args.train.lora_alpha,
+            lora_dropout=args.train.lora_dropout,
+            lora_target_modules=args.train.lora_target_modules,
+            lora_target_scope=args.train.lora_target_scope,
+        )
+        if injected_count == 0:
+            raise ValueError(
+                "LoRA is enabled, but no Linear layers matched "
+                f"scope={args.train.lora_target_scope!r} and modules={args.train.lora_target_modules!r}."
+            )
+        trainable_names = mark_only_lora_and_modules_trainable(
+            model,
+            trainable_module_patterns=args.train.lora_trainable_modules,
+        )
+        trainable_params, total_params = count_trainable_parameters(model)
+        preview = ", ".join(injected_names[:8])
+        if injected_count > 8:
+            preview += ", ..."
+        logger.info_rank0(
+            f"LoRA injected into {injected_count} Linear layers "
+            f"(rank={args.train.lora_rank}, alpha={args.train.lora_alpha}, dropout={args.train.lora_dropout})."
+        )
+        logger.info_rank0(f"LoRA target preview: {preview}")
+        logger.info_rank0(
+            f"Trainable parameters: {trainable_params:,}/{total_params:,} "
+            f"({trainable_params / total_params:.4%}); trainable tensors: {len(trainable_names)}"
+        )
     model_config = model.config
     helper.print_device_mem_info("VRAM usage after building model")
 
@@ -213,6 +264,7 @@ def main():
         writer = SummaryWriter(log_dir=log_dir)
         if args.train.use_wandb:
             wandb.init(
+                project=args.train.wandb_project,
                 name=args.train.wandb_name,
                 config={**vars(args.model), **vars(args.data), **vars(args.train)},  # flatten dict
             )
@@ -445,6 +497,8 @@ def main():
                     "lr": lr,
                     "step_time": delta_time
                 }
+                if args.train.use_wandb:
+                    wandb.log(loss_record, step=global_step)
                 loss_file_path = os.path.join(args.train.save_checkpoint_path, "loss.jsonl")
                 try:
                     with open(loss_file_path, "a", encoding="utf-8") as f:
@@ -472,6 +526,7 @@ def main():
                 dist.barrier()
                 logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
                 if args.train.global_rank == 0:
+                    prune_checkpoints(args.train.save_checkpoint_path, args.train.max_checkpoints_to_keep)
                     if args.train.save_hf_weights and save_checkpoint_path is not None:
                         hf_weights_path = os.path.join(save_checkpoint_path, "hf_ckpt")
                         model_state_dict = ckpt_to_state_dict(
@@ -517,6 +572,7 @@ def main():
                 dist.barrier()
                 logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
                 if args.train.global_rank == 0:
+                    prune_checkpoints(args.train.save_checkpoint_path, args.train.max_checkpoints_to_keep)
                     if args.train.save_hf_weights:
                         hf_weights_path = os.path.join(save_checkpoint_path, "hf_ckpt")
                         model_state_dict = ckpt_to_state_dict(
@@ -549,6 +605,7 @@ def main():
             dist.barrier()
             logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
             if args.train.global_rank == 0:
+                prune_checkpoints(args.train.save_checkpoint_path, args.train.max_checkpoints_to_keep)
                 if args.train.save_hf_weights and save_checkpoint_path is not None:
                     hf_weights_path = os.path.join(save_checkpoint_path, "hf_ckpt")
                     model_state_dict = ckpt_to_state_dict(
@@ -584,6 +641,8 @@ def main():
                 save_model_weights(hf_weights_path, model_state_dict, model_assets=model_assets)
             save_args(args, hf_weights_path)
             logger.info_rank0(f"Huggingface checkpoint saved at {hf_weights_path} successfully!")
+    if args.train.global_rank == 0 and args.train.use_wandb:
+        wandb.finish()
 
 
     dist.barrier()
