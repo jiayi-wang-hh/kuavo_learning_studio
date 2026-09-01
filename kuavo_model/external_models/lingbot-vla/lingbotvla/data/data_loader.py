@@ -70,6 +70,7 @@ def build_dataloader(
     drop_last: bool = True,
     pin_memory: bool = True,
     prefetch_factor: Optional[int] = 2,
+    persistent_workers: bool = False,
     seed: int = 0,
 ) -> "DistributedDataloader":
     parallel_state = get_parallel_state()
@@ -135,6 +136,7 @@ def build_dataloader(
         pin_memory=pin_memory,
         drop_last=drop_last,
         prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers if num_workers > 0 else False,
     )
     if use_rmpad:
         dataloader = DynamicBatchSizeDataLoader(

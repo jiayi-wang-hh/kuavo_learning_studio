@@ -14,11 +14,17 @@ data:
     - wrist_cam_l
     - wrist_cam_r
   num_workers: 4
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: false
   norm_type: meanstd
   norm_stats_file: assets/norm_stats/kuavo_sim_task1.json
 
 train:
   use_wandb: true
+  profile_training: false
+  profile_log_interval: 20
+  profile_warmup_steps: 20
   wandb_project: lingbotvla
   wandb_name: kuavo_sim_task1_lora
   output_dir: ../../../outputs/kuavo_lingbotvla/kuavo_sim_task1/vlm_action_bs1_ga4

@@ -192,6 +192,10 @@ class DataArguments:
         default=4,
         metadata={"help": "Number of batches loaded in advance by each worker."},
     )
+    persistent_workers: bool = field(
+        default=False,
+        metadata={"help": "Keep dataloader workers alive between epochs. Ignored when num_workers=0."},
+    )
     drop_last: bool = field(
         default=True,
         metadata={"help": "Whether to drop the last incomplete batch."},
@@ -486,6 +490,18 @@ class TrainingArguments:
     enable_profiling: bool = field(
         default=False,
         metadata={"help": "Enable profiling."},
+    )
+    profile_training: bool = field(
+        default=False,
+        metadata={"help": "Enable lightweight training throughput and phase timing."},
+    )
+    profile_log_interval: int = field(
+        default=20,
+        metadata={"help": "Steps per lightweight training performance report."},
+    )
+    profile_warmup_steps: int = field(
+        default=20,
+        metadata={"help": "Initial steps excluded from lightweight performance reports."},
     )
     profile_start_step: int = field(
         default=1,

@@ -207,6 +207,7 @@ def main():
             drop_last=args.data.drop_last,
             pin_memory=args.data.pin_memory,
             prefetch_factor=args.data.prefetch_factor if args.data.num_workers > 0 else None,
+            persistent_workers=args.data.persistent_workers,
         )
     else:
         raise NotImplementedError(f"Unsupported dataloader type: {args.data.dataloader_type}.")
@@ -358,6 +359,22 @@ def main():
     if args.train.global_rank == 0:
         os.makedirs(args.train.save_checkpoint_path, exist_ok=True)
     reached_max_steps = False
+    profile_enabled = args.train.profile_training
+    if profile_enabled:
+        if args.train.profile_log_interval <= 0:
+            raise ValueError("profile_log_interval must be positive")
+        if args.train.profile_warmup_steps < 0:
+            raise ValueError("profile_warmup_steps must be non-negative")
+        logger.info_rank0(
+            f"Lightweight training profiling enabled: warmup_steps={args.train.profile_warmup_steps}, "
+            f"log_interval={args.train.profile_log_interval}. CUDA is synchronized only at report boundaries."
+        )
+    profile_data_time = 0.0
+    profile_steps = 0
+    profile_forward_events = []
+    profile_backward_events = []
+    profile_optimizer_events = []
+    profile_interval_start = None
     max_steps_driven = (args.train.max_steps is not None and
                         args.train.max_steps < args.train.train_steps * args.train.num_train_epochs)
     if max_steps_driven:
@@ -382,6 +399,14 @@ def main():
         data_iterator = iter(train_dataloader)
         for _ in range(start_step, args.train.train_steps):
             global_step += 1
+            if (
+                profile_enabled
+                and global_step > args.train.profile_warmup_steps
+                and profile_interval_start is None
+            ):
+                torch.cuda.synchronize()
+                profile_interval_start = time.perf_counter()
+            data_start_time = time.perf_counter()
             try:
                 micro_batches: List[Dict[str, Any]] = next(data_iterator)
             except StopIteration:
@@ -393,8 +418,10 @@ def main():
             total_depth_loss = 0
             depth_targets = None
             depth_preds = None
-            torch.cuda.synchronize()
             start_time = time.time()
+            if profile_enabled and global_step > args.train.profile_warmup_steps:
+                profile_data_time += time.perf_counter() - data_start_time
+                profile_steps += 1
             for micro_batch in micro_batches:
                 dataset_names = micro_batch.pop('rep_id', None)
                 environ_meter.add(micro_batch)
@@ -409,6 +436,10 @@ def main():
                             pil_images = micro_batch.pop('pil_images', None)
                             depth_targets, cls_token = get_depth_target(depth_model_type, (moge_model, morgbd_model), pil_images)
 
+                if profile_enabled and global_step > args.train.profile_warmup_steps:
+                    forward_start = torch.cuda.Event(enable_timing=True)
+                    forward_end = torch.cuda.Event(enable_timing=True)
+                    forward_start.record()
                 with model_fwd_context:
                     # torch.cuda.synchronize()
                     loss, vla_loss, depth_loss, loss_log, depth_preds = model(**micro_batch, vlm_causal = args.train.vlm_causal, depth_targets=depth_targets)
@@ -417,15 +448,29 @@ def main():
                     loss = loss / len(micro_batches)
                     vla_loss = vla_loss / len(micro_batches)
                     depth_loss = depth_loss / len(micro_batches)
+                if profile_enabled and global_step > args.train.profile_warmup_steps:
+                    forward_end.record()
+                    profile_forward_events.append((forward_start, forward_end))
 
+                if profile_enabled and global_step > args.train.profile_warmup_steps:
+                    backward_start = torch.cuda.Event(enable_timing=True)
+                    backward_end = torch.cuda.Event(enable_timing=True)
+                    backward_start.record()
                 with model_bwd_context:
                     loss.backward()
+                if profile_enabled and global_step > args.train.profile_warmup_steps:
+                    backward_end.record()
+                    profile_backward_events.append((backward_start, backward_end))
 
                 total_loss += loss.item()
                 total_vla_loss += vla_loss.item()
                 if not (isinstance(depth_loss, int) or isinstance(depth_loss, float)):
                     total_depth_loss += depth_loss.item()
                 del micro_batch
+            if profile_enabled and global_step > args.train.profile_warmup_steps:
+                optimizer_start = torch.cuda.Event(enable_timing=True)
+                optimizer_end = torch.cuda.Event(enable_timing=True)
+                optimizer_start.record()
             if global_step > args.train.stable_train_steps:
                 max_grad_norm = args.train.decayed_max_grad_norm
             else:
@@ -438,13 +483,15 @@ def main():
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
+            if profile_enabled and global_step > args.train.profile_warmup_steps:
+                optimizer_end.record()
+                profile_optimizer_events.append((optimizer_start, optimizer_end))
             if hasattr(grad_norm, "full_tensor"):
                 grad_norm = grad_norm.full_tensor().item()
 
             # collect mean loss across data parallel group
             total_loss, total_vla_loss, total_depth_loss, grad_norm = all_reduce((total_loss, total_vla_loss, total_depth_loss, grad_norm), group=get_parallel_state().fsdp_group)
             
-            torch.cuda.synchronize()
             delta_time = time.time() - start_time
             lr = max(lr_scheduler.get_last_lr())
             data_loader_tqdm.update()
@@ -458,6 +505,38 @@ def main():
                 f"LR {lr:.2e}, "
                 f"StepTime {delta_time:.3f}s, "
             )
+
+            if profile_enabled and profile_steps >= args.train.profile_log_interval:
+                torch.cuda.synchronize()
+                profile_interval_time = time.perf_counter() - profile_interval_start
+                forward_time = sum(start.elapsed_time(end) for start, end in profile_forward_events) / 1000.0
+                backward_time = sum(start.elapsed_time(end) for start, end in profile_backward_events) / 1000.0
+                optimizer_time = sum(start.elapsed_time(end) for start, end in profile_optimizer_events) / 1000.0
+                profile_totals = torch.tensor(
+                    [profile_data_time, forward_time, backward_time, optimizer_time, profile_interval_time],
+                    device=torch.cuda.current_device(),
+                    dtype=torch.float64,
+                )
+                dist.all_reduce(profile_totals, op=dist.ReduceOp.MAX)
+                profile_data_time, forward_time, backward_time, optimizer_time, profile_interval_time = (
+                    profile_totals.cpu().tolist()
+                )
+                samples = profile_steps * args.train.global_batch_size
+                logger.info_rank0(
+                    "PERF "
+                    f"steps={profile_steps}, data_time={profile_data_time / profile_steps:.4f}s/step, "
+                    f"forward_time={forward_time / profile_steps:.4f}s/step, "
+                    f"backward_time={backward_time / profile_steps:.4f}s/step, "
+                    f"optimizer_time={optimizer_time / profile_steps:.4f}s/step, "
+                    f"step_time={profile_interval_time / profile_steps:.4f}s, "
+                    f"samples/s={samples / profile_interval_time:.3f}"
+                )
+                profile_data_time = 0.0
+                profile_steps = 0
+                profile_forward_events.clear()
+                profile_backward_events.clear()
+                profile_optimizer_events.clear()
+                profile_interval_start = None
 
 
             if args.train.global_rank == 0:
