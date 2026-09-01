@@ -70,13 +70,13 @@ adapters:
       mode: conda
       conda_env: lingbotvla
     args:
-      checkpoint: /path/to/lingbot/hf_ckpt                    # 必填：hf_ckpt 目录
-      training_config_path: /path/to/train_config.yaml        # 留空 -> configs/vla/real_load20000h.yaml
-      qwen25_path: /path/to/Qwen2.5-VL                        # 必填：Qwen2.5-VL tokenizer/model 目录
-      robot_norm_path: /path/to/robot_norm.json               # 必填：Kuavo norm stats JSON
+      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_100000/hf_ckpt                 # 必填：hf_ckpt 目录
+      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_100000/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
+      qwen25_path: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct                       # 必填：Qwen2.5-VL tokenizer/model 目录
+      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_sim_task1.json               # 必填：Kuavo norm stats JSON
       robot_config_path: ""                                   # 留空 -> kuavo_server/configs/lingbotvla/kuavo.yaml
       which_arm: both
-      execution_horizon: 25                                   # -1 返回模型完整 chunk
+      execution_horizon: 8                                  # -1 返回模型完整 chunk
       num_denoising_step: 10
       use_compile: false                                      # torch.compile
       use_fp32: false                                         # true 时用 fp32（默认 bf16）

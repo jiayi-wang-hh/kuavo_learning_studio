@@ -293,7 +293,8 @@ def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
             env_cfg["real"] = False
             env_cfg["platform_type"] = "4pro"
             env_cfg["eef_type"] = "rq2f85"
-            env_cfg["head_init"] = [0, 12]
+            # env_cfg["head_init"] = [0, 12]
+            env_cfg["head_init"] = [0, 0.209]
             env_cfg["image_size"] = [640, 480]
         else:
             env_cfg["env_name"] = "Kuavo-Real"

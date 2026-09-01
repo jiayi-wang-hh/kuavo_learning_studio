@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from lerobot.configs import PreTrainedConfig
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
 from kuavo_deploy.utils.xvla_florence_pad_token import install_xvla_florence_pad_token_dict_patch

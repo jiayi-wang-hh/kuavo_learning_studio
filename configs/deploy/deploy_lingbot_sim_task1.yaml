@@ -7,19 +7,19 @@ env:  # 推理环境设置
   direct_to_wbc: false  # 是否开启direct to wbc模式。
   enable_action_interpolation: true # 开启direct to wbc后是否对动作进行插值，建议开启
   control_rate: 100  # WBC/插值后的实际控制指令频率
-  image_size: [848, 480]  # 相机缩放尺寸 option: [640, 480] (仿真)/ [848, 480] (真机）
+  image_size: [640, 480]  # 相机缩放尺寸 option: [640, 480] (仿真)/ [848, 480] (真机）
 
   
 
 inference:  # 推理和评测设置
   go_bag_path: null # 推理时使用的rosbag路径
-  policy_type: diffusion  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
+  policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
   pretrained_path: /path/to/checkpoint # 要加载的权重路径。
   eval_episodes: 10  # 评测跑多少条
   max_episode_steps: 200  # 每条最多跑多少步
-  task_prompt: "robot manipulation"
+  task_prompt:  “pick and place”  # 任务提示语
+  # "Sort the toys: grasp the animal toys and place them into the right basket, and grasp the car toys and place them into the left basket."
 
-  async_inference: false
-  rtc_lite_enabled: false  # 是否启用 RTC-Lite 队列合并。
-  rtc_full_enabled: false  # 模型空间 RTC；启用时必须关闭 rtc_lite_enabled。
-  rtc_full_mode: vjp  # 可选 vjp / inpainting。
+  #"pick and place"
+
+

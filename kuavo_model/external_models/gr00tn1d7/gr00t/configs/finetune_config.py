@@ -45,10 +45,10 @@ class FinetuneConfig:
     """
 
     # --- Model Tuning Flags ---
-    tune_llm: bool = False
+    tune_llm: bool = True
     """If True, fine-tune the language model (LLM) backbone during training."""
 
-    tune_visual: bool = False
+    tune_visual: bool = True
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
     use_visual_lora: bool = False
@@ -157,7 +157,7 @@ class FinetuneConfig:
     experiment_name: str | None = None
     """Optional experiment name used as the W&B run name. Defaults to the output directory basename."""
 
-    wandb_project: str = "finetune-gr00t-n1d7"
+    wandb_project: str = "finetune-gr00t-n1d7-full"
     """W&B project name to log runs to."""
 
     save_steps: int = 1000
@@ -169,7 +169,7 @@ class FinetuneConfig:
     num_gpus: int = 1
     """Number of GPUs available for distributed or single-node training."""
 
-    use_wandb: bool = False
+    use_wandb: bool = True
     """
     If True, log metrics and artifacts to Weights & Biases (wandb).
     The project is `finetune-gr00t-n1d7`.

@@ -280,10 +280,15 @@ def main():
     #     return
 
     # config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml").strip()
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
-    if not Path(config_path).exists():
-        print(f"❌ 配置文件不存在: {config_path}")
-        sys.exit(1)
+    default_config_path = "configs/deploy/deploy.yaml"
+    config_path = input(f"请输入配置文件路径 (默认: {default_config_path}): ").strip()
+    if config_path == "":
+        config_path = default_config_path   
+    print(f"使用配置文件: {config_path}")
+    # config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
+    # if not Path(config_path).exists():
+    #     print(f"❌ 配置文件不存在: {config_path}")
+    #     sys.exit(1)
 
     parse_config(config_path)
 
