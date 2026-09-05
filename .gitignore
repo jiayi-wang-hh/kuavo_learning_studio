@@ -229,3 +229,7 @@ preview_portal.py
 kuavo_docs/
 readme_new.md
 kuavo_server/README.md
+
+# mac format
+.DS_Store
+**/.DS_Store
