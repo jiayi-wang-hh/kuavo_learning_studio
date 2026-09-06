@@ -1,0 +1,198 @@
+{
+  "annotation_notes": {
+    "outcome": "SUCCESS only when both toys finish inside their corresponding baskets.",
+    "failure_detected": "YES when at least one visible failure occurs. Normal approach, grasping in progress, and transport in progress are not failures.",
+    "first_failure_time_s": "Earliest timestamp at which the first failure becomes visually observable. Use null for a rollout with no failure.",
+    "failure_type": "Primary/first failure type. Keep this field for compatibility with the current evaluation script.",
+    "failed_side": "LEFT, RIGHT, BOTH, or NONE. Use BOTH when separate failures affect both sides.",
+    "left_toy_final_state": "ON_TABLE, HELD, IN_LEFT_BASKET, IN_RIGHT_BASKET, DROPPED, ON_BASKET_EDGE， NOT_VISIBLE, or UNCERTAIN.",
+    "right_toy_final_state": "ON_TABLE, HELD, IN_LEFT_BASKET, IN_RIGHT_BASKET, DROPPED, ON_BASKET_EDGE， NOT_VISIBLE, or UNCERTAIN.",
+    "failure_events": "List every temporally distinct failure in chronological order. For successful rollouts with no failure, replace the template event with an empty list [].",
+    "failure_event_side": "LEFT, RIGHT, or BOTH.",
+    "failure_event_type": "NONE, LEFT_GRASP_MISS, RIGHT_GRASP_MISS, BOTH_GRASP_MISS, LEFT_OBJECT_DROP, RIGHT_OBJECT_DROP, BOTH_OBJECT_DROP, WRONG_BASKET, OBJECT_OUTSIDE_BASKET, BIMANUAL_DESYNCHRONIZATION, COLLISION, NO_PROGRESS, or OTHER.",
+    "recovery_action_reference": "Optional human reference recovery action for later qualitative scoring.",
+    "recovery_exit_condition_reference": "Optional visually verifiable reference condition for later qualitative scoring."
+  },
+  "rollouts": {
+    "rollout01": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": null,
+      "failure_type": "LEFT_OBJECT_DROP",
+      "failed_side": "left",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_BASKET_EDGE",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": 6,
+          "side": "LEFT",
+          "type": "LEFT_OBJECT_DROP",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout02": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout03": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout04": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout05": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout06": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout07": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout08": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    },
+    "rollout09": {
+      "outcome": "TODO",
+      "failure_detected": "TODO",
+      "first_failure_time_s": null,
+      "failure_type": "TODO",
+      "failed_side": "TODO",
+      "left_toy_final_state": "TODO",
+      "right_toy_final_state": "TODO",
+      "failure_evidence": "TODO",
+      "failure_events": [
+        {
+          "time_s": null,
+          "side": "TODO",
+          "type": "TODO",
+          "evidence": "TODO"
+        }
+      ],
+      "recovery_action_reference": "TODO",
+      "recovery_exit_condition_reference": "TODO"
+    }
+  }
+}
