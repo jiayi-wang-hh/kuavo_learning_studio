@@ -100,18 +100,18 @@ FAILURE_TYPES = (
     "LEFT_OBJECT_DROP",
     "RIGHT_OBJECT_DROP",
     "BOTH_OBJECT_DROP",
-    "WRONG_BASKET",
     "OBJECT_OUTSIDE_BASKET",
+    "OBJECT_ON_BASKET_EDGE",
     "BIMANUAL_DESYNCHRONIZATION",
     "COLLISION",
     "NO_PROGRESS",
+    "MULTIPLE_FAILURES",
     "OTHER",
 )
 
 DEFAULT_TASK = (
-    "Use both arms to pick up the two toys from the table and place each toy "
-    "into its corresponding basket: the toy initially on the left goes into "
-    "the left basket, and the toy initially on the right goes into the right basket."
+    "Use both arms to pick up both toys from the table and release both toys "
+    "fully inside the available baskets. Either toy may be placed in either basket."
 )
 
 
@@ -297,17 +297,29 @@ Task:
 {task_instruction}
 
 Success criterion:
-- Both toys must be released inside their corresponding baskets at the end.
-- The toy initially on the left belongs in the left basket; the toy initially on the right belongs in the right basket.
-- Touching, lifting, or moving a toy alone is not task success.
-- If only one toy is correctly placed, the overall outcome is FAILURE and task_progress is PARTIAL.
+- Both toys must be released fully and stably inside a basket at the end.
+- Either toy may be placed in either basket.
+- Touching, lifting, transporting, or moving a toy alone is not task success.
+- Do not infer successful placement from the robot's motion or placement
+  attempt alone. Verify the final visible state of each toy separately.
+- A toy on the table, held by the gripper, outside a basket, or resting on a
+  basket edge is not successfully placed.
+- If only one toy is inside a basket at the end, the overall outcome is FAILURE and task_progress is PARTIAL.
+- If the final state of either toy cannot be verified visually, return
+  UNCERTAIN rather than assuming SUCCESS.
 
 Temporal decision rules:
-- A normal approach, open gripper, ongoing grasp attempt, transport motion, or unfinished placement is IN_PROGRESS, not failure by itself.
-- Report a failure only after observable evidence appears: a completed miss, slip/drop, wrong placement, collision, persistent loss of progress, or the rollout ends without both placements completed.
+- A normal approach, open gripper, ongoing grasp attempt, transport motion,
+  or unfinished placement is IN_PROGRESS, not a failure by itself.
+- Report a failure only after observable evidence appears: a completed grasp
+  miss, slip or drop, placement outside a basket, collision, persistent loss
+  of progress, or the rollout ending without both toys successfully placed.
 - Do not predict failure merely because the input comes from a failure benchmark.
-- Use only visible evidence. If the relevant interaction is occluded or ambiguous, use UNCERTAIN.
-- For a full video, outcome describes the final task result. first_failure_time_s is the earliest visible irreversible or clearly recoverable failure event, not the end of the video.
+- Use only directly visible evidence. If the relevant interaction or final toy
+  state is occluded or ambiguous, use UNCERTAIN.
+- For a full video, outcome describes the final task result.
+- first_failure_time_s is the earliest time at which a visible failure becomes
+  observable, not the end of the video.
 - Do not reveal chain-of-thought or narrate frames.
 
 failure_type must be exactly one of:
@@ -317,8 +329,8 @@ Return exactly one valid JSON object and no other text:
 {{
   "outcome": "SUCCESS | FAILURE | UNCERTAIN",
   "task_progress": "NOT_STARTED | IN_PROGRESS | PARTIAL | COMPLETE | FAILED | UNCERTAIN",
-  "left_toy_final_state": "ON_TABLE | HELD | IN_LEFT_BASKET | IN_RIGHT_BASKET | DROPPED | NOT_VISIBLE | UNCERTAIN",
-  "right_toy_final_state": "ON_TABLE | HELD | IN_LEFT_BASKET | IN_RIGHT_BASKET | DROPPED | NOT_VISIBLE | UNCERTAIN",
+  "left_toy_final_state": "ON_TABLE | HELD | IN_BASKET | ON_BASKET_EDGE | NOT_VISIBLE | UNCERTAIN",
+  "right_toy_final_state": "ON_TABLE | HELD | IN_BASKET | ON_BASKET_EDGE | NOT_VISIBLE | UNCERTAIN",
   "failure_detected": "YES | NO | UNCERTAIN",
   "first_failure_time_s": null,
   "failure_type": "one allowed label",
