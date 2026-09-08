@@ -15,8 +15,8 @@ inference:  # 推理和评测设置
   go_bag_path: null # 推理时使用的rosbag路径
   policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
   pretrained_path: /path/to/checkpoint # 要加载的权重路径。
-  eval_episodes: 10  # 评测跑多少条
-  max_episode_steps: 200  # 每条最多跑多少步
+  eval_episodes: 30  # 评测跑多少条
+  max_episode_steps: 160  # 每条最多跑多少步
   task_prompt:  “pick and place”  # 任务提示语
   # "Sort the toys: grasp the animal toys and place them into the right basket, and grasp the car toys and place them into the left basket."
 

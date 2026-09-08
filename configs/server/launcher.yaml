@@ -76,7 +76,7 @@ adapters:
       robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_sim_task1.json               # 必填：Kuavo norm stats JSON
       robot_config_path: ""                                   # 留空 -> kuavo_server/configs/lingbotvla/kuavo.yaml
       which_arm: both
-      execution_horizon: 8                                  # -1 返回模型完整 chunk
+      execution_horizon: 25                                  # -1 返回模型完整 chunk
       num_denoising_step: 10
       use_compile: false                                      # torch.compile
       use_fp32: false                                         # true 时用 fp32（默认 bf16）
