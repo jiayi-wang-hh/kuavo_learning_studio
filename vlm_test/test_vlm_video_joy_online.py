@@ -28,8 +28,24 @@ Requirements:
 from __future__ import annotations
 
 import os
+import importlib.util
+import warnings
 
-os.environ.setdefault("FORCE_QWENVL_VIDEO_READER", "torchvision")
+# Prefer decord for Qwen video decoding so we do not rely on torchvision.io,
+# whose video APIs are deprecated in torchvision >= 0.22.
+#
+# If decord is not installed, keep torchvision as a compatibility fallback,
+# but silence only torchvision's video deprecation warning.
+if importlib.util.find_spec("decord") is not None:
+    os.environ["FORCE_QWENVL_VIDEO_READER"] = "decord"
+else:
+    os.environ.setdefault("FORCE_QWENVL_VIDEO_READER", "torchvision")
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The video decoding and encoding capabilities of torchvision are deprecated.*",
+        category=UserWarning,
+        module=r"torchvision\.io\._video_deprecation_warning",
+    )
 
 import argparse
 import csv
@@ -143,6 +159,22 @@ class Window:
     videos: list[Path]
 
 
+@dataclass
+class MonitorMemory:
+    """Small, structured memory carried between causal windows."""
+
+    left_toy_state: str = "UNKNOWN"
+    right_toy_state: str = "UNKNOWN"
+    last_confirmed_time_s: Optional[float] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "left_toy_state": self.left_toy_state,
+            "right_toy_state": self.right_toy_state,
+            "last_confirmed_time_s": self.last_confirmed_time_s,
+        }
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", choices=tuple(MODE_INFO), required=True)
@@ -151,11 +183,15 @@ def parse_args():
         type=Path,
         default=Path("/media/data/jiayi/dataset/joy_videos"),
     )
-    p.add_argument("--annotations", type=Path, default=None, help="Optional GT JSON")
+    p.add_argument("--annotations", 
+                   type=Path, 
+                   default="vlm_test/toy_annotations.json", 
+                   help="Optional GT JSON"
+    )
     p.add_argument(
         "--view-mode",
         choices=("head", "wrists", "individual", "three", "head+three", "all"),
-        default="head+three",
+        default="three",
     )
     p.add_argument("--task-instruction", default=DEFAULT_TASK)
     p.add_argument("--model-path", type=Path)
@@ -404,9 +440,16 @@ def view_statement(views: list[str]) -> str:
     )
 
 
-def build_detection_prompt(task: str, views: list[str], start_s: float, end_s: float):
+def build_detection_prompt(
+    task: str,
+    views: list[str],
+    start_s: float,
+    end_s: float,
+    previous_state: MonitorMemory,
+):
     failure_types = " | ".join(FAILURE_TYPES)
-    return f"""You are an online visual failure detector for bimanual manipulation.
+    previous_state_json = json.dumps(previous_state.as_dict(), ensure_ascii=False)
+    return f"""You are a lightweight online interruption detector for bimanual manipulation.
 
 {view_statement(views)} The window covers {start_s:.1f} to {end_s:.1f} seconds.
 You may use only observations up to {end_s:.1f} seconds. Never infer future outcomes.
@@ -414,43 +457,63 @@ You may use only observations up to {end_s:.1f} seconds. Never infer future outc
 Task:
 {task}
 
-Decide whether a failure has ALREADY become directly visible by the end of this window.
-- NORMAL: execution is unfinished but making plausible progress.
-- FAILURE: a completed grasp miss, post-lift slip/drop, placement outside/on the
-  basket edge, collision, or persistent no-progress is directly visible.
-- UNCERTAIN: critical visual evidence is occluded or ambiguous.
-- Do not wait for the rollout to finish after a failure is visible.
-- Do not call an ongoing approach, grasp, transport, or placement a failure.
-- Do not infer success or failure from intended arm motion alone.
+Last confirmed state from earlier windows:
+{previous_state_json}
+
+The previous state is memory, not ground truth. Correct it if the current video
+clearly contradicts it. UNKNOWN means that no earlier state has been confirmed.
+
+Decide only whether the controller should be interrupted now.
+- NORMAL: execution is unfinished but still making plausible progress.
+- FAILURE: an observable failure has already happened and intervention is needed.
+- UNCERTAIN: the evidence needed for a safe decision is occluded or ambiguous.
+- Do not wait for the rollout to end once a failure is directly visible.
+- An approach, ongoing grasp, transport, or placement attempt is not a failure.
+- GRASP_MISS requires a completed grasp attempt in which the toy was never
+  securely lifted.
+- OBJECT_DROP requires visible temporal evidence that the toy was first held or
+  lifted and later slipped or fell. A toy merely being on the table is not proof
+  of a drop.
+- Placement failure requires visible release outside a basket or on its edge.
 - Either toy may be placed in either basket.
-- Return only the JSON object; do not narrate frames or reveal reasoning.
+- Use the previous confirmed states together with the current temporal window.
+- Return only one JSON object. Do not plan recovery and do not output control
+  commands, frame narration, or chain-of-thought.
 
 failure_type: {failure_types}
+toy state: UNKNOWN | ON_TABLE | HELD | IN_BASKET | ON_BASKET_EDGE | NOT_VISIBLE
 
 {{
   "monitor_state": "NORMAL | FAILURE | UNCERTAIN",
-  "task_phase": "APPROACH | GRASP | LIFT | TRANSPORT | PLACE | RELEASE | RECOVERY | UNCERTAIN",
-  "failure_detected": "YES | NO | UNCERTAIN",
   "failure_type": "one allowed label",
   "failed_side": "LEFT | RIGHT | BOTH | NONE | UNCERTAIN",
-  "evidence": "one short directly visible observation",
-  "immediate_action": "CONTINUE | PAUSE | STOP"
+  "left_toy_state": "one allowed toy state",
+  "right_toy_state": "one allowed toy state",
+  "evidence": "one short directly visible observation"
 }}
 
 Consistency:
-- NORMAL => failure_detected=NO, failure_type=NONE, failed_side=NONE, immediate_action=CONTINUE.
-- FAILURE => failure_detected=YES and immediate_action=PAUSE or STOP.
-- UNCERTAIN => failure_detected=UNCERTAIN and do not invent a failure type.
+- NORMAL => failure_type=NONE and failed_side=NONE.
+- FAILURE => failure_type must describe visible evidence.
+- UNCERTAIN => failure_type=NONE and failed_side=UNCERTAIN.
 """
 
 
-def build_recovery_prompt(task: str, views: list[str], detection: dict[str, Any]):
+def build_recovery_prompt(
+    task: str,
+    views: list[str],
+    detection: dict[str, Any],
+    previous_state: MonitorMemory,
+):
     return f"""You are a robot recovery planner. The robot has already been paused.
 
 {view_statement(views)}
 
 Task:
 {task}
+
+State confirmed before the triggering window:
+{json.dumps(previous_state.as_dict(), ensure_ascii=False)}
 
 Detected failure:
 {json.dumps(detection, ensure_ascii=False)}
@@ -464,6 +527,41 @@ subtask. Do not repeat the diagnosis and do not reveal reasoning.
   "resume_action": "RESUME_ORIGINAL_TASK | REDETECT | HUMAN_INTERVENTION"
 }}
 """
+
+
+CONFIRMABLE_TOY_STATES = {
+    "ON_TABLE",
+    "HELD",
+    "IN_BASKET",
+    "ON_BASKET_EDGE",
+}
+
+
+def update_monitor_memory(
+    memory: MonitorMemory,
+    detection: dict[str, Any],
+    end_s: float,
+) -> MonitorMemory:
+    """Update only states the detector claims are directly observable.
+
+    NOT_VISIBLE, UNKNOWN and malformed values do not erase an earlier confirmed
+    state.  UNCERTAIN windows also cannot modify memory.
+    """
+    if norm(detection.get("monitor_state")) == "UNCERTAIN":
+        return memory
+
+    left = norm(detection.get("left_toy_state"))
+    right = norm(detection.get("right_toy_state"))
+    changed = False
+    if left in CONFIRMABLE_TOY_STATES:
+        memory.left_toy_state = left
+        changed = True
+    if right in CONFIRMABLE_TOY_STATES:
+        memory.right_toy_state = right
+        changed = True
+    if changed:
+        memory.last_confirmed_time_s = end_s
+    return memory
 
 
 def model_class(mode: str):
@@ -780,6 +878,7 @@ def main():
         first_inference_s = None
         false_alarm = False
         recovery = {}
+        monitor_memory = MonitorMemory()
         print(
             f"\n[{stream_index}/{len(streams)}] {stream.stream_id}: "
             f"duration={duration:.2f}s, windows={len(ends)}"
@@ -789,11 +888,13 @@ def main():
             clip_start = time.perf_counter()
             window = build_window(stream, end_s, args, cache_root)
             clip_seconds = time.perf_counter() - clip_start
+            memory_before = MonitorMemory(**monitor_memory.as_dict())
             prompt = build_detection_prompt(
                 args.task_instruction,
                 stream.view.split("+"),
                 window.start_s,
                 window.end_s,
+                memory_before,
             )
             if not warmed and args.warmup:
                 for warm_index in range(args.warmup):
@@ -822,7 +923,6 @@ def main():
             memory = gpu_memory_mb()
             parsed, json_only = extract_json(raw)
             pred_state = norm(parsed.get("monitor_state"))
-            pred_failure = norm(parsed.get("failure_detected"))
             pred_type = norm(parsed.get("failure_type"))
             pred_side = norm(parsed.get("failed_side"))
             expected_state = ""
@@ -831,7 +931,7 @@ def main():
             elif gt_failure == "YES" and gt_time is not None:
                 expected_state = "FAILURE" if end_s >= gt_time else "NORMAL"
             window_correct = pred_state == expected_state if expected_state else ""
-            is_pred_failure = pred_state == "FAILURE" or pred_failure == "YES"
+            is_pred_failure = pred_state == "FAILURE"
 
             if is_pred_failure and first_pred_time is None:
                 first_pred_time = end_s
@@ -841,7 +941,10 @@ def main():
                 false_alarm = bool(gt_time is None or end_s < gt_time)
                 if args.run_recovery:
                     recovery_prompt = build_recovery_prompt(
-                        args.task_instruction, stream.view.split("+"), parsed
+                        args.task_instruction,
+                        stream.view.split("+"),
+                        parsed,
+                        memory_before,
                     )
                     recovery_raw, recovery_timing = generate(
                         model,
@@ -862,14 +965,15 @@ def main():
                 recovery_raw = ""
                 recovery_timing = {}
 
+            update_monitor_memory(monitor_memory, parsed, end_s)
+
             required = {
                 "monitor_state",
-                "task_phase",
-                "failure_detected",
                 "failure_type",
                 "failed_side",
+                "left_toy_state",
+                "right_toy_state",
                 "evidence",
-                "immediate_action",
             }
             row = {
                 "mode": args.mode,
@@ -884,11 +988,14 @@ def main():
                 "expected_monitor_state": expected_state,
                 "pred_monitor_state": pred_state,
                 "window_state_correct": window_correct,
-                "pred_failure_detected": pred_failure,
                 "pred_failure_type": pred_type,
                 "pred_failed_side": pred_side,
-                "pred_task_phase": norm(parsed.get("task_phase")),
-                "immediate_action": norm(parsed.get("immediate_action")),
+                "previous_left_toy_state": memory_before.left_toy_state,
+                "previous_right_toy_state": memory_before.right_toy_state,
+                "pred_left_toy_state": norm(parsed.get("left_toy_state")),
+                "pred_right_toy_state": norm(parsed.get("right_toy_state")),
+                "confirmed_left_toy_state": monitor_memory.left_toy_state,
+                "confirmed_right_toy_state": monitor_memory.right_toy_state,
                 "evidence": str(parsed.get("evidence") or ""),
                 "first_alarm": is_pred_failure and first_pred_time == end_s,
                 "false_alarm": is_pred_failure and bool(gt_time is None or end_s < gt_time),
@@ -903,7 +1010,7 @@ def main():
             print(
                 f"  t={end_s:5.1f}s [{window.start_s:4.1f},{end_s:4.1f}] "
                 f"GT={expected_state or '-':7s} pred={pred_state or '-':9s} "
-                f"action={row['immediate_action'] or '-':8s} "
+                f"state={monitor_memory.left_toy_state}/{monitor_memory.right_toy_state} "
                 f"inference={timing['end_to_end_seconds']:.2f}s"
             )
             with log_path.open("a", encoding="utf-8") as handle:
@@ -912,6 +1019,8 @@ def main():
                     + f"\nStream: {stream.stream_id}\nWindow: {window.start_s:.3f}-{end_s:.3f}s"
                     + f"\nVideos: {' | '.join(str(path) for path in window.videos)}"
                     + f"\nGround truth: {json.dumps(stream.gt, ensure_ascii=False)}"
+                    + f"\nPrevious confirmed state: {json.dumps(memory_before.as_dict(), ensure_ascii=False)}"
+                    + f"\nUpdated confirmed state: {json.dumps(monitor_memory.as_dict(), ensure_ascii=False)}"
                     + "\n"
                     + "\n".join(provenance)
                     + f"\nFPS: {args.fps}\n\n=== DETECTOR OUTPUT ===\n{raw}"
