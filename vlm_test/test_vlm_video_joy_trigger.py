@@ -737,11 +737,14 @@ def load_model(path: Path, args):
 
 
 def native_video_mode(mode: str) -> bool:
+    # Qwen3.5's native Transformers video path imports TorchCodec.  The current
+    # runtime uses PyTorch 2.9.1 and an ABI-incompatible TorchCodec build, while
+    # the qwen_vl_utils + decord path works with the same processor/model.
+    # Route Qwen3.5 directly to that path instead of raising and printing the
+    # same TorchCodec loader error for every window before falling back.
     return mode in {
         "qwen3_8_27b",
         "qwen3_vl_4b",
-        "qwen35_4b",
-        "qwen35_9b",
         "cosmos_reason2_32b",
     }
 

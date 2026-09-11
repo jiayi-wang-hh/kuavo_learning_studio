@@ -51,8 +51,8 @@ def parse_args():
     p.add_argument(
         "--trigger-use-contact-sheets",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use image contact sheets rather than raw video inputs.",
+        default=False,
+        help="Use image contact sheets rather than raw video inputs. Raw video is the default in this ablation script.",
     )
     p.add_argument(
         "--stop-on-pause",
@@ -86,6 +86,7 @@ def build_pause_prompt(
     end_s: float,
     current_command: str,
     expected_effect: str,
+    use_contact_sheets: bool,
 ) -> str:
     controller_context = (
         f"Current controller command: {current_command}\n"
@@ -93,12 +94,21 @@ def build_pause_prompt(
         if current_command or expected_effect
         else "Current controller command: unavailable; infer only from visible motion."
     )
+    modality_text = (
+        "You receive chronological contact sheets. Within every sheet, tiles run from "
+        "earliest (left) to latest (right). The first sheet is the full HEAD view; the "
+        "next two sheets are its left and right workspaces. Compare the earliest and "
+        "latest tiles before deciding."
+        if use_contact_sheets
+        else
+        "You receive a short chronological video window from the HEAD camera. Inspect "
+        "the temporal motion across the whole window. Compare what happens before and "
+        "after each grasp, lift, transport, and placement attempt; do not treat a single "
+        "frame or final object position alone as a failure."
+    )
     return f"""You are a fast stage-1 safety trigger for robot manipulation.
 
-You receive chronological contact sheets. Within every sheet, tiles run from
-earliest (left) to latest (right). The first sheet is the full HEAD view; the
-next two sheets are its left and right workspaces. Compare the earliest and
-latest tiles before deciding.
+{modality_text}
 
 The observation window covers {start_s:.1f} to {end_s:.1f} seconds. Use only
 these observations. Never predict what happens after it.
@@ -123,12 +133,14 @@ Return PAUSE when any of these is visible:
 Return CONTINUE when:
 - The robot is approaching, aligning, or performing an action that is still in
   progress and no suspicious outcome is visible.
-- A grasp, transport, or placement is visibly proceeding normally.
+- A grasp, lift, transport, or placement is visibly proceeding normally.
+- An object being held or transported but not yet inside a basket is normal progress, not a reason to PAUSE.
 - The task is visibly successful. Successful completion is not a failure.
 
 Important rules:
-- Prefer PAUSE for a suspicious or unverifiable completed action; stage 2 will
+- Prefer PAUSE only for a suspicious or unverifiable completed action, or a clearly abnormal motion; stage 2 will
   reject false alarms and resume execution.
+- Do not PAUSE merely because the object has not reached the basket yet while it is still being carried.
 - A toy merely being on the table is not by itself suspicious.
 - Do not require seeing the exact instant of gripper closure. If the gripper has
   moved up or away and the target was left behind, return PAUSE.
@@ -308,7 +320,8 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     suffix = args.run_name or time.strftime("%Y%m%d_%H%M%S")
-    base_name = f"{short_name}_{args.view_mode}_pause_trigger_{suffix}"
+    input_tag = "contact" if args.trigger_use_contact_sheets else "rawvideo"
+    base_name = f"{short_name}_{args.view_mode}_{input_tag}_pause_trigger_{suffix}"
     log_path = logs_dir / f"{base_name}.log"
     window_csv = metrics_dir / f"{base_name}_windows.csv"
     rollout_csv = metrics_dir / f"{base_name}_rollouts.csv"
@@ -366,6 +379,7 @@ def main() -> None:
                 window.end_s,
                 args.trigger_current_command,
                 args.trigger_expected_effect,
+                args.trigger_use_contact_sheets,
             )
 
             if not warmed and args.warmup:
@@ -568,6 +582,7 @@ def main() -> None:
         "stride_seconds": args.stride_seconds,
         "fps": args.fps,
         "trigger_use_contact_sheets": args.trigger_use_contact_sheets,
+        "trigger_input_mode": "contact_sheet" if args.trigger_use_contact_sheets else "raw_video",
         "trigger_contact_frames": args.trigger_contact_frames,
         "trigger_current_command": args.trigger_current_command or None,
         "trigger_expected_effect": args.trigger_expected_effect or None,
