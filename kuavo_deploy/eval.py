@@ -73,7 +73,8 @@ def get_script_paths():
     script_dir = Path(__file__).resolve().parent
     script = script_dir / "src" / "scripts" / "script.py"
     auto_test = script_dir / "src" / "scripts" / "script_auto_test.py"
-    return script_dir, script, auto_test
+    auto_test_vlm_agentic = script_dir / "src" / "scripts" / "script_auto_test_vlm_agentic.py"
+    return script_dir, script, auto_test, auto_test_vlm_agentic
 
 
 def ensure_log_dir(script_dir):
@@ -224,6 +225,7 @@ def print_task_menu(config_path="<config_path>", use_color=True):
         ("go", "普通任务: 先插值到bag第一帧的位置, 再回放bag包前往工作位置"),
         ("run", "普通任务: 从当前位置直接运行模型"),
         ("auto_test", "自动测试任务：仿真中自动测试模型，执行 eval_episodes 次"),
+        ("auto_test_vlm_agentic", "自动测试任务：仿真中测试vlm的failure detection，执行 eval_episodes 次"),
         ("back_to_zero", "普通任务: 回到零位"),
         ("back_to_start", "普通任务: 回到 start_bag 起始位"),
         ("offline_bag", "离线任务：从一条 bag 读取 obs，跑完整推理链路并和 bag action 做误差验证"),
@@ -243,6 +245,8 @@ def print_task_menu(config_path="<config_path>", use_color=True):
     print(f"{YELLOW}  python kuavo_deploy/src/scripts/script.py --task <chosen_task> --config {config_path}{RESET}")
     print(f"自动测试任务:{RESET}")
     print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test.py --task auto_test --config {config_path}{RESET}")
+    print(f"vlm failure detection 自动测试任务:{RESET}")
+    print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test_vlm_agentic.py --task auto_test_vlm_agentic --config {config_path}{RESET}")
 
 
 
@@ -251,7 +255,7 @@ def main():
     global current_proc, LOG_DIR
 
     print_header()
-    script_dir, script, auto_test = get_script_paths()
+    script_dir, script, auto_test, auto_test_vlm_agentic = get_script_paths()
     LOG_DIR = ensure_log_dir(script_dir)
 
     if not script.exists():
@@ -259,6 +263,9 @@ def main():
         sys.exit(1)
     if not auto_test.exists():
         print(f"错误: 找不到 script_auto_test.py 文件: {auto_test}")
+        sys.exit(1)
+    if not auto_test_vlm_agentic.exists():
+        print(f"错误: 找不到 script_auto_test_vlm_agentic.py 文件: {auto_test_vlm_agentic}")
         sys.exit(1)
 
     # print("1. 执行: python script.py --help")
@@ -280,22 +287,37 @@ def main():
     #     return
 
     # config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml").strip()
-    default_config_path = "configs/deploy/deploy.yaml"
-    config_path = input(f"请输入配置文件路径 (默认: {default_config_path}): ").strip()
-    if config_path == "":
-        config_path = default_config_path   
-    print(f"使用配置文件: {config_path}")
-    # config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
-    # if not Path(config_path).exists():
-    #     print(f"❌ 配置文件不存在: {config_path}")
-    #     sys.exit(1)
+    default_config = "configs/deploy/deploy.yaml"
+
+    while True:
+        config_input = input(
+            f"\n📄 请输入 YAML 配置文件路径\n"
+            f"   直接按 Enter 使用默认配置: {default_config}\n"
+            f"   > "
+        ).strip()
+
+        # 直接回车则使用默认配置
+        if not config_input:
+            config_path = default_config
+        else:
+            config_path = config_input
+
+        config_file = Path(config_path).expanduser()
+
+        if config_file.exists():
+            config_path = str(config_file)
+            print(f"✅ 使用配置文件: {config_path}")
+            break
+
+        print(f"❌ 配置文件不存在: {config_file}")
+        print("请重新输入。\n")
 
     parse_config(config_path)
 
     while True:
         print_task_menu(config_path=config_path, use_color=True)
 
-        sub_choice = input("请选择要执行的示例 (1-7): ").strip()
+        sub_choice = input("请选择要执行的示例 (1-8): ").strip()
 
         def start_task(cmd):
             global current_proc
@@ -312,12 +334,14 @@ def main():
         elif sub_choice == "3":
             start_task(["python3", str(auto_test), "--task", "auto_test", "--config", config_path])
         elif sub_choice == "4":
-            start_task(["python3", str(script), "--task", "back_to_zero", "--config", config_path])
+            start_task(["python3", str(auto_test_vlm_agentic), "--task", "auto_test_vlm_agentic", "--config", config_path])
         elif sub_choice == "5":
-            start_task(["python3", str(script), "--task", "back_to_start", "--config", config_path])
+            start_task(["python3", str(script), "--task", "back_to_zero", "--config", config_path])
         elif sub_choice == "6":
-            bag_path = input("请输入 bag 路径（留空则使用 inference.go_bag_path): ").strip()
+            start_task(["python3", str(script), "--task", "back_to_start", "--config", config_path])
         elif sub_choice == "7":
+            bag_path = input("请输入 bag 路径（留空则使用 inference.go_bag_path): ").strip()
+        elif sub_choice == "8":
             print("退出")
             break
         else:

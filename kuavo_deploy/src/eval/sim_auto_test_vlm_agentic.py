@@ -69,6 +69,21 @@ class VLMTriggerConfig:
     pause_confirmations: int = 1
 
 
+@dataclass(frozen=True)
+class VLMVerifierConfig:
+    """Stage-2 verifier, invoked only after a stage-1 PAUSE."""
+
+    enabled: bool = True
+    mode: str = "qwen35_9b"
+    model_path: str | None = None
+    max_new_tokens: int = 192
+    temperature: float = 0.0
+    dtype: str = "bfloat16"
+    attn_implementation: str = "sdpa"
+    device_map: str = "cuda:0"
+    max_retries_per_episode: int = 1
+
+
 # ============================================================
 # VLM request / result structures
 # ============================================================
@@ -109,6 +124,22 @@ class TriggerResult:
 
     inference_seconds: float
     clip_path: str
+
+    ####phase parameters####
+    current_phase: str
+    expected_effect: str
+    observed_effect: str
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    failure_type: str
+    recovery_action: str
+    confidence: str
+    evidence: str
+    raw_output: str
+    inference_seconds: float
+
 
 
 # ============================================================
@@ -186,6 +217,8 @@ class VLMTriggerAgent:
         self.config = config
         self.task_prompt = task_prompt
         self.ros_rate = float(ros_rate)
+        self.current_command = task_prompt
+        self.expected_effect = "The robot should make normal progress toward the task goal without any unexpected interruptions or failures."
 
         # --------------------------------------------------------
         # Validate camera
@@ -481,6 +514,8 @@ class VLMTriggerAgent:
             [self.view],
             request.start_s,
             request.end_s,
+            self.current_command,
+            self.expected_effect,
         )
 
         # ----------------------------------------------------
@@ -511,7 +546,10 @@ class VLMTriggerAgent:
             final_decision,
             guard_reason,
             schema_valid,
+            current_phase, # phase triggered by the VLM decision
             confidence,
+            expected_effect, # phase effect expected by the VLM decision
+            observed_effect, # phase effect observed by the VLM decision
         ) = pause_trigger.final_trigger_decision(
             parsed
         )
@@ -524,6 +562,13 @@ class VLMTriggerAgent:
             end_s=request.end_s,
 
             completed_at=time.perf_counter(),
+
+            ####phase parameters####
+            current_phase=current_phase,
+            expected_effect=expected_effect,
+            observed_effect=observed_effect,
+            ########################
+
 
             raw_decision=raw_decision,
             final_decision=final_decision,
@@ -542,6 +587,84 @@ class VLMTriggerAgent:
             ],
 
             clip_path=str(clip_path),
+        )
+
+
+class VLMFailureVerifier:
+    """Synchronous, stronger second-stage verifier used while motion is paused."""
+
+    ALLOWED_FAILURES = {
+        "FALSE_ALARM", "GRASP_MISS", "OBJECT_DROP", "PLACE_MISS",
+        "WRONG_OBJECT", "WRONG_DESTINATION", "COLLISION", "UNKNOWN",
+    }
+    ALLOWED_ACTIONS = {"RESUME", "RESET_AND_RETRY", "STOP"}
+
+    def __init__(self, config: VLMVerifierConfig, task_prompt: str) -> None:
+        self.config = config
+        self.task_prompt = task_prompt
+        path = Path(config.model_path or vlm_common.MODE_INFO[config.mode][1]).expanduser().resolve()
+        if not path.is_dir():
+            raise NotADirectoryError(f"Stage-2 VLM model path does not exist: {path}")
+        args = SimpleNamespace(
+            mode=config.mode, dtype=config.dtype,
+            attn_implementation=config.attn_implementation, device_map=config.device_map,
+        )
+        log_robot.info("Loading stage-2 VLM mode=%s path=%s device=%s", config.mode, path, config.device_map)
+        self.model, self.processor, _ = vlm_common.load_model(path, args)
+        self.generate_args = SimpleNamespace(
+            mode=config.mode,
+            fps=4.0,
+            temperature=config.temperature,
+            qwen35_thinking=False,
+            qwen38_thinking=False,
+        )
+
+    def verify(self, trigger: TriggerResult) -> VerificationResult:
+        prompt = f'''You are the stage-2 safety verifier for robot manipulation.
+Stage 1 paused execution because it observed: {trigger.evidence}
+
+Task goal: {self.task_prompt}
+Review the chronological video carefully. Classify the visible outcome; do not
+assume arm motion is task progress. Choose FALSE_ALARM only when the apparent
+failure is clearly not present.
+
+Failure types: FALSE_ALARM, GRASP_MISS, OBJECT_DROP, PLACE_MISS, WRONG_OBJECT,
+WRONG_DESTINATION, COLLISION, UNKNOWN.
+Recovery policy: FALSE_ALARM -> RESUME. GRASP_MISS, OBJECT_DROP, or PLACE_MISS
+-> RESET_AND_RETRY. WRONG_OBJECT, WRONG_DESTINATION, COLLISION, or UNKNOWN -> STOP.
+Return exactly JSON:
+{{"failure_type":"...", "recovery_action":"RESUME | RESET_AND_RETRY | STOP",
+  "confidence":"LOW | MEDIUM | HIGH", "evidence":"short visible evidence"}}'''
+        raw, timing = vlm_common.generate(
+            self.model, self.processor, "head", [Path(trigger.clip_path)], prompt,
+            self.generate_args, self.config.max_new_tokens,
+        )
+        parsed, _ = vlm_common.extract_json(raw)
+        failure_type = vlm_common.norm(parsed.get("failure_type"))
+        action = vlm_common.norm(parsed.get("recovery_action"))
+        confidence = vlm_common.norm(parsed.get("confidence"))
+        evidence = str(parsed.get("evidence") or "").strip()
+        # A malformed verifier response must never resume a paused robot.
+        if (
+            failure_type not in self.ALLOWED_FAILURES
+            or action not in self.ALLOWED_ACTIONS
+            or confidence not in {"LOW", "MEDIUM", "HIGH"}
+            or not evidence
+        ):
+            failure_type, action, confidence = "UNKNOWN", "STOP", "LOW"
+            evidence = evidence or "Stage-2 verifier returned invalid output."
+        # Do not allow the model to select an unsafe action for a failure class.
+        expected_action = {
+            "FALSE_ALARM": "RESUME",
+            "GRASP_MISS": "RESET_AND_RETRY", "OBJECT_DROP": "RESET_AND_RETRY",
+            "PLACE_MISS": "RESET_AND_RETRY",
+        }.get(failure_type, "STOP")
+        if action != expected_action:
+            action = expected_action
+        return VerificationResult(
+            failure_type=failure_type, recovery_action=action, confidence=confidence,
+            evidence=evidence, raw_output=raw,
+            inference_seconds=timing["end_to_end_seconds"],
         )
 
 
@@ -594,12 +717,14 @@ def run_single_episode_agentic(
     episode: int,
     output_directory: Path,
     trigger_agent: VLMTriggerAgent,
+    verifier: VLMFailureVerifier | None,
     trigger_log_path: Path,
     pause_publisher,
 ) -> tuple[int, int]:
 
     cfg = config.inference
     task_prompt = cfg.task_prompt
+    recovery_count = 0
 
     # --------------------------------------------------------
     # Environment
@@ -694,20 +819,18 @@ def run_single_episode_agentic(
             )
 
             log_robot.info(
-                "VLM trigger "
-                "episode=%d "
-                "source_step=%d "
-                "observed_step=%d "
-                "decision=%s "
-                "confidence=%s "
-                "inference=%.3fs "
-                "evidence=%s",
+                "VLM trigger episode=%d source_step=%d observed_step=%d "
+                "phase=%s decision=%s confidence=%s inference=%.3fs "
+                "expected=%s observed=%s evidence=%s",
                 episode,
                 result.source_step,
                 step,
+                result.current_phase,
                 result.final_decision,
                 result.confidence,
                 result.inference_seconds,
+                result.expected_effect,
+                result.observed_effect,
                 result.evidence,
             )
 
@@ -741,6 +864,41 @@ def run_single_episode_agentic(
                 # Tell original evaluation control logic
                 # that the evaluation is currently paused.
                 base.pause_flag.set()
+
+                if verifier is not None:
+                    verification = verifier.verify(result)
+                    log_robot.warning(
+                        "Stage-2 verdict: episode=%d type=%s action=%s confidence=%s "
+                        "inference=%.3fs evidence=%s",
+                        episode, verification.failure_type,
+                        verification.recovery_action, verification.confidence,
+                        verification.inference_seconds, verification.evidence,
+                    )
+                    if verification.recovery_action == "RESUME":
+                        control.arm_controller.resume()
+                        base.pause_flag.clear()
+                        pause_publisher.publish(False)
+                        trigger_agent.reset_episode()
+                        continue
+                    if (
+                        verification.recovery_action == "RESET_AND_RETRY"
+                        and recovery_count < verifier.config.max_retries_per_episode
+                    ):
+                        recovery_count += 1
+                        log_robot.warning(
+                            "Stage-2 recovery: resetting episode %d (retry %d/%d)",
+                            episode, recovery_count, verifier.config.max_retries_per_episode,
+                        )
+                        policy.reset()
+                        observation, info = env.reset(seed=cfg.seed)
+                        trigger_agent.reset_episode()
+                        trigger_agent.append_observation(observation)
+                        control.arm_controller.resume()
+                        base.pause_flag.clear()
+                        pause_publisher.publish(False)
+                        continue
+                    log_robot.error("Stage-2 recovery stopped execution for episode %d", episode)
+                    return 0, pause_count
 
                 # Clear old video history.
                 #
@@ -980,6 +1138,7 @@ def run_single_episode_agentic(
 def kuavo_eval_autotest_vlm_agentic(
     config,
     trigger_config: VLMTriggerConfig,
+    verifier_config: VLMVerifierConfig | None = None,
 ) -> None:
 
     cfg = config.inference
@@ -1130,6 +1289,11 @@ def kuavo_eval_autotest_vlm_agentic(
         config.env.ros_rate,
         output_directory,
     )
+    verifier = (
+        VLMFailureVerifier(verifier_config, task_prompt)
+        if verifier_config is not None and verifier_config.enabled
+        else None
+    )
 
     # ========================================================
     # Wait for simulator init
@@ -1204,6 +1368,7 @@ def kuavo_eval_autotest_vlm_agentic(
                     episode=episode,
                     output_directory=output_directory,
                     trigger_agent=trigger_agent,
+                    verifier=verifier,
                     trigger_log_path=trigger_log_path,
                     pause_publisher=pause_publisher,
                 )

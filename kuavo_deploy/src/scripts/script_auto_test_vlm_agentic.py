@@ -8,6 +8,7 @@ from pathlib import Path
 from kuavo_deploy.config import load_kuavo_config
 from kuavo_deploy.src.eval.sim_auto_test_vlm_agentic import (
     VLMTriggerConfig,
+    VLMVerifierConfig,
     kuavo_eval_autotest_vlm_agentic,
 )
 from kuavo_deploy.src.scripts.script_auto_test import ArmMove, log_robot
@@ -40,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--vlm-device-map", default="cuda:1")
     parser.add_argument("--vlm-pause-confirmations", type=int, default=1)
+    parser.add_argument("--disable-stage2-verifier", action="store_true")
+    parser.add_argument("--stage2-vlm-mode", default="qwen35_9b")
+    parser.add_argument("--stage2-vlm-model-path")
+    parser.add_argument("--stage2-vlm-device-map", default="cuda:0")
+    parser.add_argument("--stage2-vlm-max-new-tokens", type=int, default=192)
+    parser.add_argument("--stage2-max-retries-per-episode", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--task",
                         choices=["auto_test_vlm_agentic"],
@@ -53,8 +60,10 @@ class AgenticArmMove(ArmMove):
         super().__init__(config)
         self.trigger_config = trigger_config
 
-    def auto_test_vlm_agentic(self) -> None:
-        kuavo_eval_autotest_vlm_agentic(self.config, self.trigger_config)
+    def auto_test_vlm_agentic(self, verifier_config: VLMVerifierConfig) -> None:
+        kuavo_eval_autotest_vlm_agentic(
+            self.config, self.trigger_config, verifier_config
+        )
 
 
 def main() -> None:
@@ -74,12 +83,21 @@ def main() -> None:
         device_map=args.vlm_device_map,
         pause_confirmations=args.vlm_pause_confirmations,
     )
+    verifier_config = VLMVerifierConfig(
+        enabled=not args.disable_stage2_verifier,
+        mode=args.stage2_vlm_mode,
+        model_path=args.stage2_vlm_model_path,
+        device_map=args.stage2_vlm_device_map,
+        max_new_tokens=args.stage2_vlm_max_new_tokens,
+        max_retries_per_episode=args.stage2_max_retries_per_episode,
+    )
     arm = AgenticArmMove(config, trigger_config)
     if args.dry_run:
         log_robot.info("Config: %s", args.config)
         log_robot.info("VLM trigger config: %s", trigger_config)
+        log_robot.info("Stage-2 verifier config: %s", verifier_config)
         return
-    arm.auto_test_vlm_agentic()
+    arm.auto_test_vlm_agentic(verifier_config)
 
 
 if __name__ == "__main__":

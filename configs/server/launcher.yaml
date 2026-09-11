@@ -70,8 +70,8 @@ adapters:
       mode: conda
       conda_env: lingbotvla
     args:
-      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_100000/hf_ckpt                 # 必填：hf_ckpt 目录
-      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_100000/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
+      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_128000/hf_ckpt                 # 必填：hf_ckpt 目录
+      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/kuavo_sim_task1/global_step_128000/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
       qwen25_path: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct                       # 必填：Qwen2.5-VL tokenizer/model 目录
       robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_sim_task1.json               # 必填：Kuavo norm stats JSON
       robot_config_path: ""                                   # 留空 -> kuavo_server/configs/lingbotvla/kuavo.yaml
