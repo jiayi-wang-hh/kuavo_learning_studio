@@ -39,12 +39,20 @@ def parse_args() -> argparse.Namespace:
         choices=("eager", "sdpa", "flash_attention_2"),
         default="sdpa",
     )
-    parser.add_argument("--vlm-device-map", default="cuda:1")
+    parser.add_argument(
+        "--vlm-device-map",
+        default="auto",
+        help="Transformers device_map (default: auto; no fixed GPU ordinal)",
+    )
     parser.add_argument("--vlm-pause-confirmations", type=int, default=1)
     parser.add_argument("--disable-stage2-verifier", action="store_true")
     parser.add_argument("--stage2-vlm-mode", default="qwen35_9b")
     parser.add_argument("--stage2-vlm-model-path")
-    parser.add_argument("--stage2-vlm-device-map", default="cuda:0")
+    parser.add_argument(
+        "--stage2-vlm-device-map",
+        default="auto",
+        help="Transformers device_map for stage 2 (default: auto)",
+    )
     parser.add_argument("--stage2-vlm-max-new-tokens", type=int, default=192)
     parser.add_argument("--stage2-max-retries-per-episode", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")

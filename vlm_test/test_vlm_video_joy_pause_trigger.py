@@ -29,6 +29,7 @@ ALLOWED_DECISIONS = {"CONTINUE", "PAUSE"}
 ALLOWED_CONFIDENCE = {"LOW", "MEDIUM", "HIGH"}
 ALLOWED_PHASES = {
     "APPROACH",
+    "PREGRASP",
     "GRASP",
     "LIFT",
     "TRANSPORT",
@@ -153,6 +154,33 @@ ROBOT MOTION ALONE IS NOT TASK PROGRESS.
 Progress must be supported by an observable task-state change that is appropriate
 for the inferred phase.
 
+PREGRASP STALL RULE:
+PREGRASP is allowed to CONTINUE only while the gripper is visibly making
+meaningful progress toward grasp readiness: getting closer to the target,
+descending toward grasp height, or improving alignment. Do not label a window
+as normal merely because the gripper is near the object.
+Return PAUSE for PREGRASP when the same near-object/alignment state persists
+throughout the window without meaningful improvement, when the gripper moves
+away and returns without acquiring the object, or when repeated motions do not
+reduce the visible gripper-to-object gap. Describe that visible stall directly
+in observed_effect and evidence (for example: "no visible approach progress").
+
+GRASP-OUTCOME CHECK (apply independently to every visible hand and target):
+For each likely grasp attempt, compare the earliest and latest frames:
+1. Did a gripper reach grasp height/contact with a target or close around it?
+2. After that attempt, did that target leave its previous support surface and
+   move together with that gripper?
+3. Did the gripper move away, lift, or begin a new motion while its attempted
+   target remained at the previous position?
+
+If (1) is visible and either (2) is false or (3) is true, this is a completed
+GRASP attempt, not PREGRASP. Set current_phase to GRASP and return PAUSE.
+Name the hand and target only when they are visible, for example "the gripper
+missed its attempted target; the target remained on the table". Never call
+this CONTINUE merely because a gripper is again close to a target after a miss.
+Only keep PREGRASP when no gripper has clearly reached/contacted/closed on its
+attempted target yet.
+
 Examples:
 - APPROACH progress: gripper gets meaningfully closer/aligned with the correct target.
 - GRASP progress: the target becomes securely acquired by the gripper.
@@ -193,7 +221,7 @@ Important:
 - Output exactly one JSON object and nothing else.
 
 {{
-  "current_phase": "APPROACH | GRASP | LIFT | TRANSPORT | PLACE | DONE | UNCERTAIN",
+  "current_phase": "APPROACH | PREGRASP | GRASP | LIFT | TRANSPORT | PLACE | DONE | UNCERTAIN",
   "expected_effect": "short phase-specific visible state change that should occur",
   "observed_effect": "short visible state change that actually occurred",
   "trigger_decision": "CONTINUE | PAUSE",
@@ -357,9 +385,12 @@ def final_trigger_decision(
 ) -> tuple[str, str, bool, str, str, str, str]:
     """Return the guarded phase-aware decision.
 
-    The model remains the primary reasoner. This function only:
-    1) fails safe on malformed output; and
-    2) catches a small set of direct textual contradictions where the model
+    The model remains the primary reasoner. This function:
+    1) fails safe on malformed output;
+    2) suppresses only ordinary PREGRASP pauses. A directly observed PREGRASP
+       stall is still a valid pause because continuing it cannot advance the
+       task; and
+    3) catches a small set of direct textual contradictions where the model
        explicitly describes an obvious failed state change but says CONTINUE.
     """
     (
@@ -385,6 +416,61 @@ def final_trigger_decision(
     evidence = str(parsed.get("evidence") or "").strip()
     failure_text = f"{observed_effect} {evidence}".lower()
 
+    # A normal PREGRASP state is not enough to pause, but a temporal window can
+    # directly show that PREGRASP has stalled.  The old unconditional guard
+    # turned every PREGRASP PAUSE into CONTINUE, making the monitor blind to the
+    # most common failure mode in these rollouts: repeated near-object motion
+    # without a completed grasp attempt.
+    immediate_safety_signals = (
+        "unsafe",
+        "collision",
+        "collided",
+        "self-collision",
+        "crash",
+        "emergency",
+    )
+    pregrasp_stall_signals = (
+        "no visible approach progress",
+        "no approach progress",
+        "no visible progress",
+        "no task progress",
+        "no progress",
+        "grasp miss",
+        "missed the target",
+        "target remained on",
+        "stalled",
+        "stuck",
+        "unchanged",
+        "same position",
+        "remains in the same",
+        "not getting closer",
+        "does not get closer",
+        "did not get closer",
+        "moves away",
+        "moved away",
+        "repeatedly moves",
+        "repeated motion",
+    )
+    pregrasp_stall = any(
+        signal in failure_text
+        for signal in pregrasp_stall_signals
+    )
+    if (
+        phase == "PREGRASP"
+        and raw_decision == "PAUSE"
+        and not pregrasp_stall
+        and not any(signal in failure_text for signal in immediate_safety_signals)
+    ):
+        return (
+            "CONTINUE",
+            "PREGRASP_NO_COMPLETED_ATTEMPT",
+            True,
+            phase,
+            confidence,
+            expected_effect,
+            observed_effect,
+        )
+
     # Intentionally narrow: the prompt is the main semantic reasoner.
     direct_failure_signals = (
         "remains on the table",
@@ -409,6 +495,17 @@ def final_trigger_decision(
         "on the edge",
         "no task progress",
         "no progress",
+        "stalled",
+        "stuck",
+        "unchanged",
+        "same position",
+        "not getting closer",
+        "does not get closer",
+        "did not get closer",
+        "moves away",
+        "moved away",
+        "repeatedly moves",
+        "repeated motion",
     )
 
     if raw_decision == "CONTINUE" and any(

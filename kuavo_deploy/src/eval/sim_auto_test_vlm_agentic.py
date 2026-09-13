@@ -7,6 +7,7 @@ import datetime
 import gc
 import json
 import time
+import subprocess
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -63,7 +64,8 @@ class VLMTriggerConfig:
 
     dtype: str = "bfloat16"
     attn_implementation: str = "sdpa"
-    device_map: str = "cuda:1"
+    # Let Transformers select from the devices visible to this process.
+    device_map: str = "auto"
 
     # Number of consecutive PAUSE decisions required
     pause_confirmations: int = 1
@@ -71,16 +73,37 @@ class VLMTriggerConfig:
 
 @dataclass(frozen=True)
 class VLMVerifierConfig:
-    """Stage-2 verifier, invoked only after a stage-1 PAUSE."""
+    """Stage-2 verifier executed in a separate Qwen3.5 environment."""
 
     enabled: bool = True
+
     mode: str = "qwen35_9b"
-    model_path: str | None = None
+
+    model_path: str = (
+        "/media/data/jiayi/hf_model/Qwen3.5-9B"
+    )
+
+    # Python executable belonging to the separate qwen35 env
+    python_path: str = (
+        "/home/kuavo/miniforge3/envs/qwen35/bin/python"
+    )
+
+    # External verifier script
+    verifier_script: str = (
+        "/home/kuavo/jiayi/kuavo_learning_studio/"
+        "vlm_test/qwen35_failure_verifier.py"
+    )
+
     max_new_tokens: int = 192
     temperature: float = 0.0
     dtype: str = "bfloat16"
     attn_implementation: str = "sdpa"
-    device_map: str = "cuda:0"
+    # The external verifier resolves its visible devices independently.
+    device_map: str = "auto"
+
+    # Maximum time to wait for stage-2
+    timeout_seconds: float = 120.0
+
     max_retries_per_episode: int = 1
 
 
@@ -554,6 +577,61 @@ class VLMTriggerAgent:
             parsed
         )
 
+        # Preserve ordinary PREGRASP execution, but do not erase a PAUSE for a
+        # directly observed PREGRASP stall.  The stage-1 module applies the
+        # same semantic guard; this duplicate check protects against importing
+        # an older stage-1 module in a long-running ROS process.
+        failure_text = " ".join(
+            (
+                observed_effect,
+                str(parsed.get("evidence") or ""),
+            )
+        ).lower()
+        immediate_safety_signals = (
+            "unsafe",
+            "collision",
+            "collided",
+            "self-collision",
+            "crash",
+            "emergency",
+        )
+        pregrasp_stall_signals = (
+            "no visible approach progress",
+            "no approach progress",
+            "no visible progress",
+            "no task progress",
+            "no progress",
+            "grasp miss",
+            "missed the target",
+            "target remained on",
+            "stalled",
+            "stuck",
+            "unchanged",
+            "same position",
+            "remains in the same",
+            "not getting closer",
+            "does not get closer",
+            "did not get closer",
+            "moves away",
+            "moved away",
+            "repeatedly moves",
+            "repeated motion",
+        )
+        if (
+            current_phase == "PREGRASP"
+            and final_decision == "PAUSE"
+            and not any(
+                signal in failure_text
+                for signal in pregrasp_stall_signals
+            )
+            and not any(
+                signal in failure_text
+                for signal in immediate_safety_signals
+            )
+        ):
+            final_decision = "CONTINUE"
+            guard_reason = "SIM_PREGRASP_NO_COMPLETED_ATTEMPT"
+
         return TriggerResult(
             episode=request.episode,
             source_step=request.step,
@@ -591,80 +669,376 @@ class VLMTriggerAgent:
 
 
 class VLMFailureVerifier:
-    """Synchronous, stronger second-stage verifier used while motion is paused."""
+    """
+    Stage-2 verifier executed in an external Python environment.
+
+    The Kuavo simulation continues running inside the lingbotvla
+    environment. Qwen3.5 is launched using the Python executable
+    from the dedicated qwen35 environment.
+    """
 
     ALLOWED_FAILURES = {
-        "FALSE_ALARM", "GRASP_MISS", "OBJECT_DROP", "PLACE_MISS",
-        "WRONG_OBJECT", "WRONG_DESTINATION", "COLLISION", "UNKNOWN",
+        "FALSE_ALARM",
+        "GRASP_MISS",
+        "OBJECT_DROP",
+        "PLACE_MISS",
+        "WRONG_OBJECT",
+        "WRONG_DESTINATION",
+        "COLLISION",
+        "UNKNOWN",
     }
-    ALLOWED_ACTIONS = {"RESUME", "RESET_AND_RETRY", "STOP"}
 
-    def __init__(self, config: VLMVerifierConfig, task_prompt: str) -> None:
+    ALLOWED_ACTIONS = {
+        "RESUME",
+        "RESET_AND_RETRY",
+        "STOP",
+    }
+
+    def __init__(
+        self,
+        config: VLMVerifierConfig,
+        task_prompt: str,
+    ) -> None:
+
         self.config = config
         self.task_prompt = task_prompt
-        path = Path(config.model_path or vlm_common.MODE_INFO[config.mode][1]).expanduser().resolve()
-        if not path.is_dir():
-            raise NotADirectoryError(f"Stage-2 VLM model path does not exist: {path}")
-        args = SimpleNamespace(
-            mode=config.mode, dtype=config.dtype,
-            attn_implementation=config.attn_implementation, device_map=config.device_map,
-        )
-        log_robot.info("Loading stage-2 VLM mode=%s path=%s device=%s", config.mode, path, config.device_map)
-        self.model, self.processor, _ = vlm_common.load_model(path, args)
-        self.generate_args = SimpleNamespace(
-            mode=config.mode,
-            fps=4.0,
-            temperature=config.temperature,
-            qwen35_thinking=False,
-            qwen38_thinking=False,
+
+        # ----------------------------------------------------
+        # Validate Qwen3.5 Python environment
+        # ----------------------------------------------------
+
+        self.python_path = Path(
+            config.python_path
+        ).expanduser().resolve()
+
+        if not self.python_path.is_file():
+            raise FileNotFoundError(
+                "Stage-2 Python executable does not exist: "
+                f"{self.python_path}"
+            )
+
+        # ----------------------------------------------------
+        # Validate external verifier script
+        # ----------------------------------------------------
+
+        self.verifier_script = Path(
+            config.verifier_script
+        ).expanduser().resolve()
+
+        if not self.verifier_script.is_file():
+            raise FileNotFoundError(
+                "Stage-2 verifier script does not exist: "
+                f"{self.verifier_script}"
+            )
+
+        # ----------------------------------------------------
+        # Validate model path
+        # ----------------------------------------------------
+
+        self.model_path = Path(
+            config.model_path
+            or "/media/data/jiayi/hf_model/Qwen3.5-9B"
+        ).expanduser().resolve()
+
+        if not self.model_path.is_dir():
+            raise NotADirectoryError(
+                "Stage-2 VLM model path does not exist: "
+                f"{self.model_path}"
+            )
+
+        log_robot.info(
+            "Stage-2 verifier configured as external process: "
+            "python=%s model=%s script=%s device=%s",
+            self.python_path,
+            self.model_path,
+            self.verifier_script,
+            config.device_map,
         )
 
-    def verify(self, trigger: TriggerResult) -> VerificationResult:
-        prompt = f'''You are the stage-2 safety verifier for robot manipulation.
-Stage 1 paused execution because it observed: {trigger.evidence}
+    def verify(
+        self,
+        trigger: TriggerResult,
+    ) -> VerificationResult:
 
-Task goal: {self.task_prompt}
-Review the chronological video carefully. Classify the visible outcome; do not
-assume arm motion is task progress. Choose FALSE_ALARM only when the apparent
-failure is clearly not present.
+        # ----------------------------------------------------
+        # Build Stage-2 prompt
+        # ----------------------------------------------------
 
-Failure types: FALSE_ALARM, GRASP_MISS, OBJECT_DROP, PLACE_MISS, WRONG_OBJECT,
-WRONG_DESTINATION, COLLISION, UNKNOWN.
-Recovery policy: FALSE_ALARM -> RESUME. GRASP_MISS, OBJECT_DROP, or PLACE_MISS
--> RESET_AND_RETRY. WRONG_OBJECT, WRONG_DESTINATION, COLLISION, or UNKNOWN -> STOP.
-Return exactly JSON:
-{{"failure_type":"...", "recovery_action":"RESUME | RESET_AND_RETRY | STOP",
-  "confidence":"LOW | MEDIUM | HIGH", "evidence":"short visible evidence"}}'''
-        raw, timing = vlm_common.generate(
-            self.model, self.processor, "head", [Path(trigger.clip_path)], prompt,
-            self.generate_args, self.config.max_new_tokens,
+        prompt = f"""
+You are the stage-2 safety verifier for robot manipulation.
+
+Task goal:
+{self.task_prompt}
+
+Stage-1 information:
+
+Current phase:
+{trigger.current_phase}
+
+Expected effect:
+{trigger.expected_effect}
+
+Observed effect:
+{trigger.observed_effect}
+
+Stage-1 evidence:
+{trigger.evidence}
+
+Stage 1 paused robot execution because it suspected a failure.
+
+Review the chronological video carefully.
+
+Important:
+- Do not assume arm motion means task progress.
+- Check whether the action was actually completed before declaring failure.
+- Visual x-y alignment in the head camera does NOT prove that the gripper
+  has reached the correct vertical depth.
+- A gripper that is still descending toward the object is not a grasp miss.
+- A grasp miss should only be declared when a grasp/lift attempt has
+  actually completed and the target was not acquired.
+- Choose FALSE_ALARM when the Stage-1 pause occurred while the robot was
+  still normally approaching, aligning, descending, or executing an
+  incomplete action.
+
+Failure types:
+- FALSE_ALARM
+- GRASP_MISS
+- OBJECT_DROP
+- PLACE_MISS
+- WRONG_OBJECT
+- WRONG_DESTINATION
+- COLLISION
+- UNKNOWN
+
+Recovery policy:
+- FALSE_ALARM -> RESUME
+- GRASP_MISS -> RESET_AND_RETRY
+- OBJECT_DROP -> RESET_AND_RETRY
+- PLACE_MISS -> RESET_AND_RETRY
+- WRONG_OBJECT -> STOP
+- WRONG_DESTINATION -> STOP
+- COLLISION -> STOP
+- UNKNOWN -> STOP
+
+Return exactly one JSON object:
+
+{{
+  "failure_type": "FALSE_ALARM | GRASP_MISS | OBJECT_DROP | PLACE_MISS | WRONG_OBJECT | WRONG_DESTINATION | COLLISION | UNKNOWN",
+  "recovery_action": "RESUME | RESET_AND_RETRY | STOP",
+  "confidence": "LOW | MEDIUM | HIGH",
+  "evidence": "short directly visible evidence"
+}}
+""".strip()
+
+        # ----------------------------------------------------
+        # Run Qwen3.5 using external conda environment
+        # ----------------------------------------------------
+
+        command = [
+            str(self.python_path),
+            str(self.verifier_script),
+
+            "--video",
+            str(trigger.clip_path),
+
+            "--model-path",
+            str(self.model_path),
+
+            "--prompt",
+            prompt,
+
+            "--device-map",
+            self.config.device_map,
+
+            "--dtype",
+            self.config.dtype,
+
+            "--attn-implementation",
+            self.config.attn_implementation,
+
+            "--max-new-tokens",
+            str(self.config.max_new_tokens),
+
+            "--temperature",
+            str(self.config.temperature),
+        ]
+
+        log_robot.info(
+            "Starting external stage-2 verifier: "
+            "episode=%d source_step=%d clip=%s",
+            trigger.episode,
+            trigger.source_step,
+            trigger.clip_path,
         )
-        parsed, _ = vlm_common.extract_json(raw)
-        failure_type = vlm_common.norm(parsed.get("failure_type"))
-        action = vlm_common.norm(parsed.get("recovery_action"))
-        confidence = vlm_common.norm(parsed.get("confidence"))
-        evidence = str(parsed.get("evidence") or "").strip()
-        # A malformed verifier response must never resume a paused robot.
+
+        start = time.perf_counter()
+
+        try:
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=self.config.timeout_seconds,
+                check=False,
+            )
+
+        except subprocess.TimeoutExpired:
+
+            inference_seconds = (
+                time.perf_counter() - start
+            )
+
+            log_robot.error(
+                "Stage-2 verifier timed out after %.1fs",
+                inference_seconds,
+            )
+
+            return VerificationResult(
+                failure_type="UNKNOWN",
+                recovery_action="STOP",
+                confidence="LOW",
+                evidence="Stage-2 verifier timed out.",
+                raw_output="",
+                inference_seconds=inference_seconds,
+            )
+
+        inference_seconds = (
+            time.perf_counter() - start
+        )
+
+        # ----------------------------------------------------
+        # Handle external process failure
+        # ----------------------------------------------------
+
+        if process.returncode != 0:
+
+            log_robot.error(
+                "Stage-2 verifier failed with return code %d\n"
+                "stderr:\n%s",
+                process.returncode,
+                process.stderr,
+            )
+
+            return VerificationResult(
+                failure_type="UNKNOWN",
+                recovery_action="STOP",
+                confidence="LOW",
+                evidence=(
+                    "Stage-2 external verifier process failed."
+                ),
+                raw_output=process.stdout,
+                inference_seconds=inference_seconds,
+            )
+
+        # ----------------------------------------------------
+        # Parse JSON returned by qwen35_failure_verifier.py
+        # ----------------------------------------------------
+
+        raw = process.stdout.strip()
+
+        try:
+            parsed = json.loads(raw)
+
+        except json.JSONDecodeError:
+
+            log_robot.error(
+                "Stage-2 verifier returned invalid JSON:\n%s\n"
+                "stderr:\n%s",
+                raw,
+                process.stderr,
+            )
+
+            return VerificationResult(
+                failure_type="UNKNOWN",
+                recovery_action="STOP",
+                confidence="LOW",
+                evidence=(
+                    "Stage-2 verifier returned invalid JSON."
+                ),
+                raw_output=raw,
+                inference_seconds=inference_seconds,
+            )
+
+        failure_type = str(
+            parsed.get("failure_type") or ""
+        ).strip().upper()
+
+        action = str(
+            parsed.get("recovery_action") or ""
+        ).strip().upper()
+
+        confidence = str(
+            parsed.get("confidence") or ""
+        ).strip().upper()
+
+        evidence = str(
+            parsed.get("evidence") or ""
+        ).strip()
+
+        # ----------------------------------------------------
+        # Fail-safe validation
+        # ----------------------------------------------------
+
         if (
             failure_type not in self.ALLOWED_FAILURES
             or action not in self.ALLOWED_ACTIONS
-            or confidence not in {"LOW", "MEDIUM", "HIGH"}
+            or confidence not in {
+                "LOW",
+                "MEDIUM",
+                "HIGH",
+            }
             or not evidence
         ):
-            failure_type, action, confidence = "UNKNOWN", "STOP", "LOW"
-            evidence = evidence or "Stage-2 verifier returned invalid output."
-        # Do not allow the model to select an unsafe action for a failure class.
+            log_robot.error(
+                "Invalid stage-2 response: %s",
+                raw,
+            )
+
+            failure_type = "UNKNOWN"
+            action = "STOP"
+            confidence = "LOW"
+
+            if not evidence:
+                evidence = (
+                    "Stage-2 verifier returned invalid output."
+                )
+
+        # ----------------------------------------------------
+        # Enforce deterministic recovery policy
+        # ----------------------------------------------------
+
         expected_action = {
             "FALSE_ALARM": "RESUME",
-            "GRASP_MISS": "RESET_AND_RETRY", "OBJECT_DROP": "RESET_AND_RETRY",
+
+            "GRASP_MISS": "RESET_AND_RETRY",
+            "OBJECT_DROP": "RESET_AND_RETRY",
             "PLACE_MISS": "RESET_AND_RETRY",
-        }.get(failure_type, "STOP")
+
+        }.get(
+            failure_type,
+            "STOP",
+        )
+
         if action != expected_action:
+
+            log_robot.warning(
+                "Overriding stage-2 recovery action: "
+                "model=%s expected=%s failure=%s",
+                action,
+                expected_action,
+                failure_type,
+            )
+
             action = expected_action
+
         return VerificationResult(
-            failure_type=failure_type, recovery_action=action, confidence=confidence,
-            evidence=evidence, raw_output=raw,
-            inference_seconds=timing["end_to_end_seconds"],
+            failure_type=failure_type,
+            recovery_action=action,
+            confidence=confidence,
+            evidence=evidence,
+            raw_output=raw,
+            inference_seconds=inference_seconds,
         )
 
 
@@ -820,14 +1194,16 @@ def run_single_episode_agentic(
 
             log_robot.info(
                 "VLM trigger episode=%d source_step=%d observed_step=%d "
-                "phase=%s decision=%s confidence=%s inference=%.3fs "
+                "phase=%s raw=%s final=%s confidence=%s guard=%s inference=%.3fs "
                 "expected=%s observed=%s evidence=%s",
                 episode,
                 result.source_step,
                 step,
                 result.current_phase,
+                result.raw_decision,
                 result.final_decision,
                 result.confidence,
+                result.guard_reason,
                 result.inference_seconds,
                 result.expected_effect,
                 result.observed_effect,
