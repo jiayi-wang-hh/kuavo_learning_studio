@@ -13,6 +13,7 @@ from kuavo_deploy.src.eval.failure_trigger.visual_critic_trigger import (
     TriggerDecision,
     VisualCriticConfig,
     VisualCriticTrigger,
+    observation_camera_timestamp,
     parse_critic_output,
 )
 
@@ -34,7 +35,8 @@ class BlockingModel:
 def result(state="STALLED", confidence="HIGH", stale=False):
     return CriticResult(
         state=state, progress_score=None, confidence=confidence, reason="visible state",
-        source_step=1, source_timestamp=time.perf_counter(), inference_ms=1,
+        source_step=1, source_timestamp=time.perf_counter(),
+        source_monotonic_timestamp=time.perf_counter(), inference_ms=1,
         result_age_ms=1, stale_discarded=stale,
     )
 
@@ -56,6 +58,18 @@ class VisualCriticTests(unittest.TestCase):
         decision = TriggerDecision(VisualCriticConfig())
         self.assertEqual(decision.evaluate(result("FAILURE", stale=True)), (False, None))
 
+    def test_invalid_observation_breaks_consecutive_stall(self):
+        for invalid in (
+            result("STALLED", stale=True),
+            result("UNKNOWN", "HIGH"),
+            result("STALLED", "LOW"),
+        ):
+            decision = TriggerDecision(VisualCriticConfig(stall_confirm_count=2))
+            self.assertEqual(decision.evaluate(result()), (False, None))
+            self.assertEqual(decision.evaluate(invalid), (False, None))
+            self.assertEqual(decision.stall_counter, 0)
+            self.assertEqual(decision.evaluate(result()), (False, None))
+
     def test_only_newest_pending_frame_is_processed(self):
         model = BlockingModel()
         trigger = VisualCriticTrigger(VisualCriticConfig(), model)
@@ -66,10 +80,51 @@ class VisualCriticTests(unittest.TestCase):
         trigger.submit(frame(3), "task", 3, time.perf_counter())
         model.release.set()
         deadline = time.time() + 2
-        while len(model.steps) < 2 and time.time() < deadline:
+        latest = None
+        while latest is None and time.time() < deadline:
+            latest = trigger.get_latest_result()
             time.sleep(0.01)
         trigger.shutdown()
         self.assertEqual(model.steps, [1, 3])
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.source_step, 3)
+
+    def test_reset_timeout_invalidates_old_generation(self):
+        model = BlockingModel()
+        trigger = VisualCriticTrigger(
+            VisualCriticConfig(reset_timeout_s=0.01), model
+        )
+        frame = lambda value: np.full((2, 2, 3), value, dtype=np.uint8)
+        trigger.submit(frame(1), "old", 1, 10.0, time.perf_counter())
+        self.assertTrue(model.started.wait(timeout=1))
+        started = time.monotonic()
+        trigger.reset()
+        self.assertLess(time.monotonic() - started, 0.2)
+        trigger.submit(frame(2), "new", 2, 20.0, time.perf_counter())
+        model.release.set()
+        deadline = time.time() + 2
+        latest = None
+        while latest is None and time.time() < deadline:
+            latest = trigger.get_latest_result()
+            time.sleep(0.01)
+        trigger.shutdown()
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.source_step, 2)
+        self.assertEqual(latest.source_timestamp, 20.0)
+
+    def test_camera_timestamp_is_preferred_when_present(self):
+        camera = "observation.images.head_cam_h"
+        self.assertEqual(
+            observation_camera_timestamp(
+                {camera: {"data": object(), "timestamp": 123.5}}, camera
+            ),
+            123.5,
+        )
+        self.assertEqual(
+            observation_camera_timestamp({f"{camera}.timestamp": 456.5}, camera),
+            456.5,
+        )
+        self.assertIsNone(observation_camera_timestamp({}, camera))
 
 
 if __name__ == "__main__":

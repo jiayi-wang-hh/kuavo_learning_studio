@@ -1,0 +1,26 @@
+[
+  {
+    "id": "held_center_01",
+    "image": "frames/held_center_01.jpg",
+    "target": "red apple",
+    "ground_truth": {
+      "gripper_visible": true,
+      "target_visible": true,
+      "grasp_state": "HELD",
+      "object_position": "CENTER",
+      "vertical_relation": "IN_AIR"
+    }
+  },
+  {
+    "id": "not_held_left_01",
+    "image": "frames/not_held_left_01.jpg",
+    "target": "red apple",
+    "ground_truth": {
+      "gripper_visible": true,
+      "target_visible": true,
+      "grasp_state": "NOT_HELD",
+      "object_position": "LEFT",
+      "vertical_relation": "ON_SURFACE"
+    }
+  }
+]

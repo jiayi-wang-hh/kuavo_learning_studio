@@ -33,10 +33,11 @@ class VisualCriticConfig:
     progress_epsilon: float = 0.03
     no_progress_confirm_count: int = 3
     max_new_tokens: int = 96
+    reset_timeout_s: float = 2.0
 
     def __post_init__(self) -> None:
-        if self.frequency_hz <= 0 or self.max_result_age_s <= 0:
-            raise ValueError("frequency_hz and max_result_age_s must be positive")
+        if self.frequency_hz <= 0 or self.max_result_age_s <= 0 or self.reset_timeout_s < 0:
+            raise ValueError("frequency_hz/max_result_age_s must be positive and reset_timeout_s non-negative")
         if self.stall_confirm_count < 1 or self.no_progress_confirm_count < 1:
             raise ValueError("confirmation counts must be >= 1")
         if self.failure_min_confidence not in CONFIDENCES:
@@ -47,6 +48,45 @@ class VisualCriticConfig:
 
 class VisualCriticModel(Protocol):
     def infer(self, frame: np.ndarray, subtask: str) -> Mapping[str, Any]: ...
+
+
+def _timestamp_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    if hasattr(value, "to_sec"):
+        return float(value.to_sec())
+    if hasattr(value, "sec"):
+        nanosec = getattr(value, "nanosec", getattr(value, "nsec", 0))
+        return float(value.sec) + float(nanosec) * 1e-9
+    if hasattr(value, "item"):
+        value = value.item()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def observation_camera_timestamp(
+    observation: Mapping[str, Any], camera_key: str
+) -> float | None:
+    """Read a camera/ROS timestamp when an environment exposes one."""
+    camera_value = observation.get(camera_key)
+    if isinstance(camera_value, Mapping):
+        timestamp = _timestamp_seconds(camera_value.get("timestamp"))
+        if timestamp is not None:
+            return timestamp
+    for key in (
+        f"{camera_key}.timestamp",
+        f"{camera_key}_timestamp",
+        "observation.camera_timestamp",
+        "observation.timestamp",
+        "timestamp",
+    ):
+        if key in observation:
+            timestamp = _timestamp_seconds(observation[key])
+            if timestamp is not None:
+                return timestamp
+    return None
 
 
 def build_critic_prompt(subtask: str) -> str:
@@ -135,18 +175,28 @@ class VisualCriticTrigger(FailureTrigger):
         self._condition = threading.Condition(self._lock)
         self._running = False
         self._closed = False
-        self._pending: CriticInput | None = None
-        self._results: list[CriticResult] = []
+        self._pending: tuple[CriticInput, int] | None = None
+        self._latest_result: CriticResult | None = None
         self._generation = 0
         self._worker: threading.Thread | None = None
 
-    def submit(self, frame: np.ndarray, subtask: str, source_step: int, timestamp: float) -> None:
-        item = CriticInput(np.array(frame, copy=True), subtask, source_step, timestamp)
+    def submit(
+        self,
+        frame: np.ndarray,
+        subtask: str,
+        source_step: int,
+        timestamp: float,
+        monotonic_timestamp: float | None = None,
+    ) -> None:
+        item = CriticInput(
+            np.array(frame, copy=True), subtask, source_step, timestamp,
+            time.perf_counter() if monotonic_timestamp is None else monotonic_timestamp,
+        )
         with self._condition:
             if self._closed:
                 raise RuntimeError("visual critic is shut down")
             if self._running:
-                self._pending = item
+                self._pending = (item, self._generation)
                 return
             self._running = True
             generation = self._generation
@@ -169,37 +219,45 @@ class VisualCriticTrigger(FailureTrigger):
             result = CriticResult(
                 state=state, progress_score=score, confidence=confidence, reason=reason,
                 source_step=item.source_step, source_timestamp=item.source_timestamp,
+                source_monotonic_timestamp=item.source_monotonic_timestamp,
                 inference_ms=(time.perf_counter() - started) * 1000,
             )
             with self._condition:
                 if generation == self._generation:
-                    self._results.append(result)
+                    self._latest_result = result
                 pending = self._pending
                 self._pending = None
-                if pending is None or generation != self._generation or self._closed:
+                if pending is None or self._closed:
                     self._running = False
                     self._condition.notify_all()
                     return
-                item = pending
+                item, generation = pending
 
     def get_latest_result(self) -> CriticResult | None:
         with self._lock:
-            if not self._results:
+            if self._latest_result is None:
                 return None
-            result = self._results.pop(0)
-        age_ms = max(0.0, (time.perf_counter() - result.source_timestamp) * 1000)
+            result = self._latest_result
+            self._latest_result = None
+        age_ms = max(
+            0.0,
+            (time.perf_counter() - result.source_monotonic_timestamp) * 1000,
+        )
         return result.with_age(age_ms, age_ms > self.config.max_result_age_s * 1000)
 
     def reset(self) -> None:
         with self._condition:
-            # Episode/reset boundaries may wait; the control loop never does.
-            # Waiting here prevents an old worker from consuming a new
-            # episode's pending frame after the generation changes.
-            self._pending = None
-            while self._running:
-                self._condition.wait(timeout=0.1)
+            # Invalidate before waiting. A late result from this generation is
+            # discarded, even if model.generate cannot be cancelled.
             self._generation += 1
-            self._results.clear()
+            self._pending = None
+            self._latest_result = None
+            deadline = time.monotonic() + self.config.reset_timeout_s
+            while self._running:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=remaining)
 
     def shutdown(self) -> None:
         with self._condition:
@@ -224,7 +282,13 @@ class TriggerDecision:
         self.no_progress_counter = 0
 
     def evaluate(self, result: CriticResult) -> tuple[bool, str | None]:
-        if result.stale_discarded:
+        if (
+            result.stale_discarded
+            or result.state == "UNKNOWN"
+            or result.confidence == "LOW"
+        ):
+            self.stall_counter = 0
+            self.no_progress_counter = 0
             return False, None
         enough_failure = CONFIDENCE_RANK[result.confidence] >= CONFIDENCE_RANK[self.config.failure_min_confidence]
         enough_stall = CONFIDENCE_RANK[result.confidence] >= CONFIDENCE_RANK[self.config.stall_min_confidence]

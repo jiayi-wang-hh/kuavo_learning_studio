@@ -39,21 +39,34 @@ head camera 最新帧 + 当前 subtask
 
 - 控制循环只提交帧和非阻塞轮询结果，不等待推理。
 - 同时只运行一次推理；运行期间到达的帧只保留最新一帧，中间帧不排队。
+- 完成结果也只有 `_latest_result` 单槽；尚未消费时，新结果会覆盖旧结果，不存在结果 FIFO 积压。
 - 每个结果携带 `source_step`、源时间、推理耗时和消费时 age。
 - 超过 `max_result_age_s` 的结果标记为 stale；即使它是高置信度 `FAILURE` 也不会暂停。
-- `STALLED` 默认连续 3 次中高置信度才触发；`FAILURE` 默认中高置信度立即触发。
+- stale、`UNKNOWN` 或 LOW-confidence 结果都会打断并清零 STALLED 连续计数。
+- `STALLED` 默认连续 3 次有效的中高置信度结果才触发；`FAILURE` 默认中高置信度立即触发。
+- reset 先递增 generation 使旧结果失效，最多等待 `reset_timeout_s`；超时后返回，旧推理完成时不会发布旧 generation 结果。
 - 解析失败或模型异常产生 `UNKNOWN/LOW`，不会通过自然语言关键词猜测失败。
 - V2 路径不存在 `PREGRASP_NO_COMPLETED_ATTEMPT` 覆盖规则。
 
 ## Stage-2 配合方式
 
-适配器把 V2 结果转换成现有 Stage-2 接受的边界对象，并在真正触发时把近期滚动帧保存成短视频。Stage-2 收到：
+适配器把 V2 结果转换成现有 Stage-2 接受的边界对象，并在真正触发时把近期滚动帧保存成短视频。视频的明确定义是“正式 pause 前最近一段执行上下文”，并不表示视频终点等于 critic source step。视频旁会保存同名 JSON metadata，Stage-2 prompt 也会收到这些字段：
+
+- `critic_source_step`
+- `critic_source_timestamp`
+- `pause_step`
+- `context_start_step`
+- `context_end_step`
 
 - critic state（放在现有 `current_phase` 字段）；
 - confidence；
 - reason / visible evidence；
 - source step；
 - 触发前短视频。
+
+若 observation 暴露 camera/ROS timestamp，`critic_source_timestamp` 优先使用该值；否则使用提交时的 monotonic timestamp。stale 计算始终使用单独保存的 monotonic timestamp，避免混用 ROS epoch 与 `perf_counter()`。
+
+`SUCCESS` 当前为 informational-only：它会清除 STALLED 计数并记录 `subtask_transition=false` 日志，但不会触发 planner、subtask transition 或 episode completion。
 
 随后完全复用现有 `VLMFailureVerifier.verify()` 及恢复流程。Visual Critic 不产生 failure type 或 recovery action。
 

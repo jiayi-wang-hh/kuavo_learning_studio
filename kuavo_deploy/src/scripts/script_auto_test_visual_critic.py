@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--critic-stall-confirm-count", type=int, default=3)
     parser.add_argument("--critic-camera-key", default="observation.images.head_cam_h")
     parser.add_argument("--critic-max-new-tokens", type=int, default=96)
+    parser.add_argument("--critic-reset-timeout-s", type=float, default=2.0)
     parser.add_argument("--stage2-vlm-model-path")
     parser.add_argument("--stage2-python-path", default=VLMVerifierConfig.python_path)
     parser.add_argument("--stage2-verifier-script", default=VLMVerifierConfig.verifier_script)
@@ -45,6 +46,7 @@ def main() -> None:
         stall_confirm_count=args.critic_stall_confirm_count,
         camera_key=args.critic_camera_key,
         max_new_tokens=args.critic_max_new_tokens,
+        reset_timeout_s=args.critic_reset_timeout_s,
     )
     verifier = VLMVerifierConfig(
         enabled=not args.disable_stage2_verifier,

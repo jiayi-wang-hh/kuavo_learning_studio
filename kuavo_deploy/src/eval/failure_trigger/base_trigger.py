@@ -18,6 +18,7 @@ class CriticInput:
     subtask: str
     source_step: int
     source_timestamp: float
+    source_monotonic_timestamp: float
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class CriticResult:
     reason: str
     source_step: int
     source_timestamp: float
+    source_monotonic_timestamp: float
     inference_ms: float
     result_age_ms: float | None = None
     stale_discarded: bool = False
@@ -42,7 +44,12 @@ class FailureTrigger(ABC):
 
     @abstractmethod
     def submit(
-        self, frame: np.ndarray, subtask: str, source_step: int, timestamp: float
+        self,
+        frame: np.ndarray,
+        subtask: str,
+        source_step: int,
+        timestamp: float,
+        monotonic_timestamp: float | None = None,
     ) -> None: ...
 
     @abstractmethod
