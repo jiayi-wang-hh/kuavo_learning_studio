@@ -58,3 +58,27 @@ inference:  # 推理和评测设置。
   async_low_watermark: 3  # 队列剩余动作数小于等于该值时触发下一次 chunk 推理。
   async_warmup_actions: 1  # 启动控制线程前至少等待的动作数量。
   async_action_timeout: 1.0  # 控制线程等待新动作的最长时间，超时后停止。
+
+  # 在线 YOLO + EE pose failure trigger。默认关闭，开启前必须填入仿真端
+  # 实际发布 geometry_msgs/PoseStamped 的左右末端 topic。
+  failure_trigger_enabled: false
+  failure_trigger_ee_pose_topic_left: ""
+  failure_trigger_ee_pose_topic_right: ""
+  failure_trigger_pause_topic: "/kuavo/pause_state"
+  failure_trigger_yolo_model: "yolov8s-worldv2.pt"
+  failure_trigger_yolo_device: "0"
+  failure_trigger_yolo_python: ""  # 例如 /home/kuavo/miniforge3/envs/yolo_jiayi/bin/python
+  failure_trigger_yolo_conf: 0.03
+  failure_trigger_yolo_iou: 0.5
+  failure_trigger_motion_window_s: 0.5
+  # PoseStamped 可用时，XY 为世界坐标平面速度；Z 单独记录用于抓取/上提分析。
+  failure_trigger_ee_motion_min: 0.02
+  failure_trigger_ee_vertical_motion_min: 0.02
+  failure_trigger_toy_motion_max: 0.012
+  failure_trigger_duration_s: 1.0
+  failure_trigger_confirm_frames: 2
+  failure_trigger_start_after_s: 0.0  # 各任务可覆盖；sim_task1 设为 6.0 s
+  failure_trigger_pose_max_age_s: 0.10
+  # 仅在仿真端没有 EE PoseStamped topic 时使用 observation.state（关节+夹爪）
+  # 作为运动代理；这不是笛卡尔 EE 速度。
+  failure_trigger_allow_joint_state_fallback: false

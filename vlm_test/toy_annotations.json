@@ -1,0 +1,395 @@
+{
+  "annotation_notes": {
+    "outcome": "SUCCESS only when both toys finish fully and stably inside a basket. Either toy may be placed in either the left or right basket.",
+    "valid_placement": "IN_LEFT_BASKET and IN_RIGHT_BASKET are both valid final states for either toy. Basket assignment does not depend on the toy's initial side or the robot arm used.",
+    "failure_detected": "YES when at least one visible failure occurs. Normal approach, grasping in progress, transport in progress, and placing a toy into either basket are not failures.",
+    "first_failure_time_s": "Earliest timestamp at which the first failure becomes visually observable. Use null for a rollout with no failure.",
+    "failure_type": "Primary or first failure type. Keep this field for compatibility with the current evaluation script.",
+    "failed_side": "LEFT, RIGHT, BOTH, or NONE. Side refers to the toy's initial side, not the basket in which it is placed. Use BOTH when separate failures affect both toys.",
+    "left_toy_final_state": "ON_TABLE, HELD, IN_BASKET, ON_BASKET_EDGE, NOT_VISIBLE, or UNCERTAIN.",
+    "right_toy_final_state": "ON_TABLE, HELD, IN_BASKET, ON_BASKET_EDGE, NOT_VISIBLE, or UNCERTAIN.",
+    "failure_events": "List every temporally distinct failure in chronological order. For a rollout with no failure, use an empty list [].",
+    "failure_event_side": "LEFT, RIGHT, or BOTH. Side refers to the toy's initial side.",
+    "failure_event_type": "NONE, LEFT_GRASP_MISS, RIGHT_GRASP_MISS, BOTH_GRASP_MISS, LEFT_OBJECT_DROP, RIGHT_OBJECT_DROP, BOTH_OBJECT_DROP, OBJECT_OUTSIDE_BASKET, BIMANUAL_DESYNCHRONIZATION, COLLISION, NO_PROGRESS, or OTHER.",
+    "recovery_action_reference": "Optional human reference action that places every unplaced toy fully inside either available basket.",
+    "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+  },
+  "rollouts": {
+    "rollout01": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 6.5,
+      "failure_type": "MULTIPLE_FAILURES",
+      "failed_side": "BOTH",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_BASKET_EDGE",
+      "failure_evidence": "The left toy is on the table and the right toy is resting on the basket edge.",
+      "failure_events": [
+        {
+          "time_s": 6.5,
+          "side": "LEFT",
+          "type": "LEFT_OBJECT_DROP",
+          "evidence": "The left toy was dropped outside the left basket."
+        },
+        {
+          "time_s": 9.3,
+          "side": "RIGHT",
+          "type": "OBJECT_OUTSIDE_BASKET",
+          "evidence": "The right toy was left on the edge of the right basket instead of inside it."
+        }
+      ],
+      "recovery_needed": "YES",
+      "recovery_action_reference": "Re-grasp both toys and place each toy fully inside the baskets.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout02": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout03": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 4.7,
+      "failure_type": "LEFT_GRASP_MISS",
+      "failed_side": "LEFT",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": "The left gripper did not contact the left toy and the left toy was on the table.",
+      "failure_events": [
+        {
+          "time_s": 4.7,
+          "side": "LEFT",
+          "type": "LEFT_GRASP_MISS",
+          "evidence": "The left gripper did not contact the left toy and the left toy was on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp the left toy and put it in the basekt.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout04": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 4.3,
+      "failure_type": "MULTIPLE_FAILURES",
+      "failed_side": "BOTH",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "Both toys were on the table.",
+      "failure_events": [
+        {
+          "time_s": 4.3,
+          "side": "LEFT",
+          "type": "LEFT_GRASP_MISS",
+          "evidence": "The left toy was on the table."
+        },
+        {
+          "time_s": 4.3,
+          "side": "RIGHT",
+          "type": "RIGHT_GRASP_MISS",
+          "evidence": "The right toy was on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp both toys and place each toy fully inside the baskets.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout05": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 6.1,
+      "failure_type": "RIGHT_OBJECT_DROP",
+      "failed_side": "RIGHT",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "The right toy is on the table.",
+      "failure_events": [
+        {
+          "time_s": 6.1,
+          "side": "RIGHT",
+          "type": "RIGHT_OBJECT_DROP",
+          "evidence": "The right toy is on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp the right toy and put it in the basekt.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout06": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 6.4,
+      "failure_type": "MULTIPLE_FAILURES",
+      "failed_side": "BOTH",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "Both toys are on the table.",
+      "failure_events": [
+        {
+          "time_s": 6.4,
+          "side": "RIGHT",
+          "type": "RIGHT_OBJECT_DROP",
+          "evidence": "The right toy is on the table."
+        },
+        {
+          "time_s": 7.8,
+          "side": "LEFT",
+          "type": "LEFT_OBJECT_DROP",
+          "evidence": "The left toy is on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp both toys and place each toy fully inside the baskets.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout07": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 5.1,
+      "failure_type": "LEFT_GRASP_MISS",
+      "failed_side": "LEFT",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": "The left gripper did not contact the left toy and the left toy is on the table.",
+      "failure_events": [
+        {
+          "time_s": 5.1,
+          "side": "LEFT",
+          "type": "LEFT_GRASP_MISS",
+          "evidence": "The left gripper did not contact the left toy and the left toy was on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp the left toy and put it in the basekt.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout08": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 4.2,
+      "failure_type": "MULTIPLE_FAILURES",
+      "failed_side": "BOTH",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "Both toys are on the table.",
+      "failure_events": [
+        {
+          "time_s": 4.2,
+          "side": "RIGHT",
+          "type": "RIGHT_GRASP_MISS",
+          "evidence": "The right toy is on the table."
+        },
+        {
+          "time_s": 5.8,
+          "side": "LEFT",
+          "type": "LEFT_OBJECT_DROP",
+          "evidence": "The left toy is on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp both toys and place each toy fully inside the baskets.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout09": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 5.4,
+      "failure_type": "MULTIPLE_FAILURES",
+      "failed_side": "BOTH",
+      "left_toy_final_state": "ON_TABLE",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "Both toys are on the table.",
+      "failure_events": [
+        {
+          "time_s": 5.4,
+          "side": "LEFT",
+          "type": "LEFT_GRASP_MISS",
+          "evidence": "The left toy is on the table."
+        },
+        {
+          "time_s": 7.1,
+          "side": "RIGHT",
+          "type": "RIGHT_GRASP_MISS",
+          "evidence": "The right toy is on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp both toys and place each toy fully inside the baskets.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout10": {
+      "outcome": "FAILURE",
+      "failure_detected": "YES",
+      "first_failure_time_s": 5.7,
+      "failure_type": "RIGHT_GRASP_MISS",
+      "failed_side": "RIGHT",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "ON_TABLE",
+      "failure_evidence": "The right toy is on the table.",
+      "failure_events": [
+        {
+          "time_s": 5.7,
+          "side": "RIGHT",
+          "type": "RIGHT_GRASP_MISS",
+          "evidence": "The right toy is on the table."
+        }
+      ],
+      "recovery_action_reference": "Re-grasp the right toy and put it in the basekt.",
+      "recovery_exit_condition_reference": "Both toys are fully and stably inside a basket; either basket is valid for either toy."
+    },
+    "rollout21": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout22": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout23": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout24": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout25": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout26": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout27": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout28": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout29": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    },
+    "rollout30": {
+      "outcome": "SUCCESS",
+      "task_progress": "COMPLETE",
+      "failure_detected": "NO",
+      "first_failure_time_s": null,
+      "failure_type": "NONE",
+      "failed_side": "NONE",
+      "left_toy_final_state": "IN_BASKET",
+      "right_toy_final_state": "IN_BASKET",
+      "failure_evidence": null,
+      "failure_events": [],
+      "recovery_needed": "NO",
+      "recovery_action_reference": null,
+      "recovery_exit_condition_reference": null
+    }
+  }
+}

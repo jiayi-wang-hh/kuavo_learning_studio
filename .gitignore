@@ -230,3 +230,10 @@ kuavo_docs/
 readme_new.md
 kuavo_server/README.md
 src/lingbotvla/
+
+weights/clip/ViT-B-32.pt
+sam2.1_b.pt
+yolov8s-worldv2.pt
+yolo11n.pt
+*.wandb
+*.mp4

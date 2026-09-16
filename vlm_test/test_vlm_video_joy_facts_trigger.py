@@ -64,12 +64,13 @@ from typing import Any
 import torch
 import transformers
 
-from vlm_test import test_vlm_video_joy_trigger as common
-# import test_vlm_video_joy_trigger as common
+# from vlm_test import test_vlm_video_joy_trigger as common
+import test_vlm_video_joy_trigger as common
 
 
 ALLOWED_DECISIONS = {"CONTINUE", "PAUSE"}
 ALLOWED_CONFIDENCE = {"LOW", "MEDIUM", "HIGH"}
+ALLOWED_FACT_VALUES = {"YES", "NO", "UNCERTAIN"}
 
 
 def parse_args():
@@ -91,6 +92,7 @@ def parse_args():
         default=4,
         help="Chronological frames rendered into each contact sheet.",
     )
+    p.add_argument("--detection-max-new-tokens", type=int, default=192)
     p.add_argument(
         "--trigger-use-contact-sheets",
         action=argparse.BooleanOptionalAction,
@@ -140,6 +142,7 @@ def parse_args():
     args.trigger_expected_effect = trigger_args.trigger_expected_effect
     args.trigger_contact_frames = trigger_args.trigger_contact_frames
     args.trigger_use_contact_sheets = trigger_args.trigger_use_contact_sheets
+    args.detection_max_new_tokens = trigger_args.detection_max_new_tokens
     # Keep --stop-on-interrupt working for compatibility with the shared CLI,
     # but expose the stage-1 meaning under its own name.
     args.stop_on_pause = (
@@ -398,6 +401,160 @@ def build_pause_prompt(
     )
 
 
+
+def build_visual_facts_prompt(
+    task: str,
+    views: list[str],
+    start_s: float,
+    end_s: float,
+    current_command: str,
+    expected_effect: str,
+) -> str:
+    controller_context = (
+        f"Current controller command: {current_command}\n"
+        f"Expected visible effect: {expected_effect}"
+        if current_command or expected_effect
+        else "Current controller command: unavailable."
+    )
+
+    return f"""You are a visual observer for robot manipulation.
+
+IMPORTANT: You do NOT decide PAUSE or CONTINUE.
+You only report directly visible facts from the observation window.
+
+You receive chronological contact sheets. In each sheet, tiles run from
+earliest (left) to latest (right). The first sheet is the full HEAD view; the
+next two sheets are left and right workspace crops.
+
+Observation window: {start_s:.1f} to {end_s:.1f} seconds.
+
+Task:
+{task}
+
+{controller_context}
+
+Object-role rules:
+- The small movable toys/objects are manipulation TARGETS.
+- The baskets/containers are DESTINATIONS, not grasp targets.
+- Never report a basket remaining stationary as evidence about whether a grasp
+  of a toy succeeded.
+- Evaluate LEFT and RIGHT sides independently.
+- Do not infer an event merely because it is plausible. Use UNCERTAIN when the
+  contact sheet does not establish it.
+
+For each side, report:
+
+1. attempt_visible
+   YES only if the gripper visibly reaches/interacts with the corresponding
+   movable target and the sequence shows an actual manipulation attempt.
+   NO if it is clearly still approaching or never reaches the target.
+   UNCERTAIN if contact/attempt cannot be established.
+
+2. target_following
+   YES if the movable target visibly moves together with the gripper after the
+   attempt.
+   NO if an attempt is visible and the gripper subsequently departs while the
+   movable target clearly stays behind.
+   UNCERTAIN if the relationship cannot be established.
+   If attempt_visible is NO, use UNCERTAIN here.
+
+3. unexpected_drop_visible
+    YES only if the object unintentionally slips, falls, or separates
+    outside the intended placement.
+
+    A deliberate release into the correct basket is NOT a drop failure
+    and must be NO.
+
+Also report:
+- placement_failure_visible:
+  YES only if a placement visibly finishes with a target outside a basket or
+  unstable on its edge.
+- unsafe_motion_visible:
+  YES only for a clearly abnormal collision or unsafe motion.
+
+Grounding requirements:
+- Describe observations, not conclusions.
+- Do NOT output "grasp failed", "task failed", "PAUSE", or "CONTINUE".
+- Do NOT copy a rule as evidence.
+- Distinguish movable toys from baskets.
+- If the sequence is ambiguous, use UNCERTAIN instead of guessing.
+
+Return exactly one JSON object and nothing else:
+
+{{
+  "left_attempt_visible": "YES | NO | UNCERTAIN",
+  "left_target_following": "YES | NO | UNCERTAIN",
+  "left_unexpected_drop_visible": "YES | NO | UNCERTAIN",
+  "right_attempt_visible": "YES | NO | UNCERTAIN",
+  "right_target_following": "YES | NO | UNCERTAIN",
+  "right_unexpected_drop_visible": "YES | NO | UNCERTAIN",
+  "placement_failure_visible": "YES | NO | UNCERTAIN",
+  "unsafe_motion_visible": "YES | NO | UNCERTAIN",
+  "evidence": "one short concrete description of the visible motion"
+}}
+"""
+
+
+FACT_KEYS = (
+    "left_attempt_visible",
+    "left_target_following",
+    "left_unexpected_drop_visible",
+    "right_attempt_visible",
+    "right_target_following",
+    "right_unexpected_drop_visible",
+    "placement_failure_visible",
+    "unsafe_motion_visible",
+)
+
+
+def normalize_fact(value: Any) -> str:
+    value = common.norm(value)
+    return value if value in ALLOWED_FACT_VALUES else ""
+
+
+def validate_visual_facts(parsed: dict[str, Any]) -> tuple[bool, dict[str, str]]:
+    facts = {key: normalize_fact(parsed.get(key)) for key in FACT_KEYS}
+    valid = (
+        all(facts[key] in ALLOWED_FACT_VALUES for key in FACT_KEYS)
+        and bool(str(parsed.get("evidence") or "").strip())
+    )
+    return valid, facts
+
+
+def decision_from_visual_facts(
+    parsed: dict[str, Any],
+) -> tuple[str, str, bool, str, dict[str, str]]:
+    """Deterministic trigger policy over VLM-produced visual facts."""
+    valid, facts = validate_visual_facts(parsed)
+    if not valid:
+        # Safety fail-safe for malformed output.
+        return "PAUSE", "INVALID_FACTS_FAIL_SAFE", False, "LOW", facts
+
+    hard_failure = (
+        facts["left_unexpected_drop_visible"] == "YES"
+        or facts["right_unexpected_drop_visible"] == "YES"
+        or facts["placement_failure_visible"] == "YES"
+        or facts["unsafe_motion_visible"] == "YES"
+    )
+
+    left_grasp_miss = (
+        facts["left_attempt_visible"] == "YES"
+        and facts["left_target_following"] == "NO"
+    )
+    right_grasp_miss = (
+        facts["right_attempt_visible"] == "YES"
+        and facts["right_target_following"] == "NO"
+    )
+
+    if hard_failure:
+        return "PAUSE", "FACT_HARD_FAILURE", True, "HIGH", facts
+    if left_grasp_miss or right_grasp_miss:
+        return "PAUSE", "FACT_GRASP_MISS", True, "HIGH", facts
+
+    # UNCERTAIN does not itself trigger a pause in this baseline.
+    return "CONTINUE", "FACTS_NO_FAILURE", True, "MEDIUM", facts
+
+
 def make_contact_sheet(
     source: Path,
     destination: Path,
@@ -563,7 +720,7 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
     suffix = args.run_name or time.strftime("%Y%m%d_%H%M%S")
-    base_name = f"{short_name}_{args.view_mode}_pause_trigger_{suffix}"
+    base_name = f"{short_name}_{args.view_mode}_facts_trigger_{suffix}"
     log_path = logs_dir / f"{base_name}.log"
     window_csv = metrics_dir / f"{base_name}_windows.csv"
     rollout_csv = metrics_dir / f"{base_name}_rollouts.csv"
@@ -614,8 +771,7 @@ def main() -> None:
                 else []
             )
             contact_sheet_seconds = time.perf_counter() - visual_start
-            prompt = build_pause_prompt(
-                args.mode,
+            prompt = build_visual_facts_prompt(
                 args.task_instruction,
                 stream.view.split("+"),
                 window.start_s,
@@ -660,10 +816,17 @@ def main() -> None:
                 )
             gpu_memory = common.gpu_memory_mb()
             parsed, json_only = common.extract_json(raw)
-            raw_decision = common.norm(parsed.get("trigger_decision"))
-            guarded_decision, guard_reason, schema_valid, confidence = (
-                final_trigger_decision(parsed)
-            )
+            (
+                guarded_decision,
+                guard_reason,
+                schema_valid,
+                confidence,
+                visual_facts,
+            ) = decision_from_visual_facts(parsed)
+            # In facts mode, the VLM does not output a trigger decision.
+            # This field records the deterministic Python decision for compatibility
+            # with the existing metrics pipeline.
+            raw_decision = guarded_decision
 
             if guarded_decision == "PAUSE":
                 pause_streak += 1
@@ -714,6 +877,7 @@ def main() -> None:
                     final_decision == expected_decision if expected_decision else ""
                 ),
                 "evidence": str(parsed.get("evidence") or ""),
+                **visual_facts,
                 "first_pause": is_pause and first_pause_time == end_s,
                 "false_pause": is_pause and bool(gt_time is None or end_s < gt_time),
                 "json_only": json_only,
@@ -823,6 +987,7 @@ def main() -> None:
         "window_seconds": args.window_seconds,
         "stride_seconds": args.stride_seconds,
         "fps": args.fps,
+        "trigger_policy": "vlm_visual_facts_plus_python_rule",
         "trigger_use_contact_sheets": args.trigger_use_contact_sheets,
         "trigger_contact_frames": args.trigger_contact_frames,
         "trigger_current_command": args.trigger_current_command or None,

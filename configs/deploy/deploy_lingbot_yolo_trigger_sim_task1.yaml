@@ -1,0 +1,36 @@
+env:  # 推理环境设置
+  inference_env: sim  # 选仿真还是真机 option: sim/real 
+  platform_type: "4pro"  # 机器人型号，选项: "4pro", "5w" 或 "5"
+  which_arm: both  # 控制左手、右手还是双手
+  eef_type: rq2f85  # 夹爪或手型类型，仿真选择rq2f85，真机可选leju_claw（夹爪） qiangnao（灵巧手）
+  ros_rate: 10  # 推理频率
+  direct_to_wbc: false  # 是否开启direct to wbc模式。
+  enable_action_interpolation: true # 开启direct to wbc后是否对动作进行插值，建议开启
+  control_rate: 100  # WBC/插值后的实际控制指令频率
+  image_size: [640, 480]  # 相机缩放尺寸 option: [640, 480] (仿真)/ [848, 480] (真机）
+
+  
+
+inference:  # 推理和评测设置
+  go_bag_path: null # 推理时使用的rosbag路径
+  policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
+  pretrained_path: /path/to/checkpoint # 要加载的权重路径。
+  eval_episodes: 10  # 评测跑多少条
+  max_episode_steps: 160  # 每条最多跑多少步
+  task_prompt: "pick and place"  # 任务提示语
+  # "Sort the toys: grasp the animal toys and place them into the right basket, and grasp the car toys and place them into the left basket."
+  #"pick and place"
+  failure_trigger_enabled: true
+  failure_trigger_allow_joint_state_fallback: true
+  # Fill these with the simulator's world/base-frame PoseStamped topics to
+  # use Cartesian XY/Z speed instead of the joint-state fallback.
+  failure_trigger_ee_pose_topic_left: ""
+  failure_trigger_ee_pose_topic_right: ""
+  # This task reaches its first grasp around 5--6 seconds; ignore normal
+  # approach motion before then.
+  failure_trigger_start_after_s: 12.0
+  # Keep Ultralytics/Torch isolated from the lingbotvla simulator environment.
+  # The evaluator launches this interpreter as a persistent local YOLO worker.
+  failure_trigger_yolo_python: /home/kuavo/miniforge3/envs/yolo_jiayi/bin/python
+  failure_trigger_yolo_model: yolov8s-worldv2.pt
+  failure_trigger_yolo_device: "0"

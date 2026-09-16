@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Causal stage-1 VLM trigger that decides only CONTINUE or PAUSE.
 
+Supports head-only contact sheets and synchronized HEAD + LEFT-WRIST + RIGHT-WRIST contact sheets.
+
 This detector intentionally does not classify failure types, plan recovery,
 track object state, or decide task completion.  PAUSE hands a short video
 buffer to a stronger stage-2 verifier; false pauses may therefore be resumed
@@ -64,8 +66,8 @@ from typing import Any
 import torch
 import transformers
 
-from vlm_test import test_vlm_video_joy_trigger as common
-# import test_vlm_video_joy_trigger as common
+# from vlm_test import test_vlm_video_joy_trigger as common
+import test_vlm_video_joy_trigger as common
 
 
 ALLOWED_DECISIONS = {"CONTINUE", "PAUSE"}
@@ -150,6 +152,24 @@ def parse_args():
     return args
 
 
+def contact_sheet_description(views: list[str]) -> str:
+    """Describe the contact-sheet layout for head-only or synchronized three-view input."""
+    normalized = [str(view).lower() for view in views]
+    if normalized == ["head", "left", "right"]:
+        return (
+            "You receive three synchronized chronological contact sheets from the same "
+            "observation window: HEAD, LEFT-WRIST, and RIGHT-WRIST. Within each sheet, "
+            "tiles run from earliest (left) to latest (right). Use the HEAD sheet for "
+            "global scene context and the wrist sheets for local grasp/contact evidence. "
+            "Cross-check views when one camera is occluded or ambiguous."
+        )
+    return (
+        "You receive chronological contact sheets. Within each sheet, tiles run from "
+        "earliest (left) to latest (right). In head-only mode the sheets are: full HEAD "
+        "view, HEAD left-workspace crop, and HEAD right-workspace crop."
+    )
+
+
 def build_pause_prompt_default(
     task: str,
     views: list[str],
@@ -169,11 +189,11 @@ def build_pause_prompt_default(
         )
     )
 
+    contact_sheet_context = contact_sheet_description(views)
+
     return f"""You are a fast stage-1 visual trigger for robot manipulation.
 
-You receive chronological contact sheets. Within each sheet, tiles run from
-earliest (left) to latest (right). The first sheet is the full HEAD view; the
-next two sheets are crops of the left and right workspaces.
+{contact_sheet_context}
 
 The observation window covers {start_s:.1f} to {end_s:.1f} seconds.
 Use only visible changes inside this window.
@@ -281,11 +301,11 @@ def build_pause_prompt_qwen35(
         )
     )
 
+    contact_sheet_context = contact_sheet_description(views)
+
     return f"""You are a fast stage-1 visual trigger for robot manipulation.
 
-You receive chronological contact sheets. Within each sheet, tiles run from
-earliest (left) to latest (right). The first sheet is the full HEAD view; the
-next two sheets are crops of the left and right workspaces.
+{contact_sheet_context}
 
 The observation window covers {start_s:.1f} to {end_s:.1f} seconds.
 Use only visible evidence inside this window.
@@ -433,18 +453,51 @@ def make_contact_sheet(
     )
 
 
-def build_contact_sheets(window, stream, cache_root: Path, frame_count: int) -> list[tuple[str, Path]]:
-    """Build overview plus left/right workspace sheets for each supplied view."""
+def build_contact_sheets(
+    window,
+    stream,
+    cache_root: Path,
+    frame_count: int,
+) -> list[tuple[str, Path]]:
+    """Build temporal contact sheets for head-only or synchronized three-view input.
+
+    Head-only mode preserves the original behavior:
+      1. HEAD overview
+      2. HEAD left-workspace crop
+      3. HEAD right-workspace crop
+
+    Three-view mode uses the real synchronized cameras instead of workspace crops:
+      1. HEAD overview
+      2. LEFT-WRIST overview
+      3. RIGHT-WRIST overview
+    """
     sheets: list[tuple[str, Path]] = []
-    stamp = f"{int(round(window.start_s * 1000)):08d}_{int(round(window.end_s * 1000)):08d}"
-    for label, source in zip(stream.view.split("+"), window.videos):
+    labels = [label.lower() for label in stream.view.split("+")]
+    stamp = (
+        f"{int(round(window.start_s * 1000)):08d}_"
+        f"{int(round(window.end_s * 1000)):08d}"
+    )
+
+    is_three_view = labels == ["head", "left", "right"]
+
+    for label, source in zip(labels, window.videos):
         root = cache_root / "pause_contact_sheets" / stream.rollout / label
         overview = root / f"{stamp}_overview.jpg"
         make_contact_sheet(source, overview, frame_count)
+
+        if is_three_view:
+            display_label = {
+                "head": "HEAD OVERVIEW",
+                "left": "LEFT-WRIST OVERVIEW",
+                "right": "RIGHT-WRIST OVERVIEW",
+            }.get(label, f"{label.upper()} OVERVIEW")
+            sheets.append((display_label, overview))
+            continue
+
         sheets.append((f"{label.upper()} OVERVIEW", overview))
+
+        # Original head-only fallback: derive two workspace crops from HEAD.
         if label == "head":
-            # The head camera is 640x480 in this dataset.  Relative crop
-            # expressions keep this valid if a later recording changes size.
             left = root / f"{stamp}_left_workspace.jpg"
             right = root / f"{stamp}_right_workspace.jpg"
             make_contact_sheet(
@@ -465,6 +518,7 @@ def build_contact_sheets(window, stream, cache_root: Path, frame_count: int) -> 
                     ("HEAD RIGHT WORKSPACE", right),
                 ]
             )
+
     return sheets
 
 
@@ -532,10 +586,11 @@ def final_trigger_decision(parsed: dict[str, Any]) -> tuple[str, str, bool, str]
 def main() -> None:
     args = parse_args()
     common.require_ffmpeg()
-    if args.trigger_use_contact_sheets and args.view_mode != "head":
+    if args.trigger_use_contact_sheets and args.view_mode not in {"head", "three"}:
         raise ValueError(
-            "Contact-sheet mode currently expects --view-mode head so it can "
-            "supply one overview and two workspace crops."
+            "Contact-sheet mode supports --view-mode head or --view-mode three. "
+            "Use head for one overview plus two HEAD workspace crops, or three "
+            "for synchronized HEAD + LEFT-WRIST + RIGHT-WRIST contact sheets."
         )
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():

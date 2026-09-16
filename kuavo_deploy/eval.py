@@ -74,7 +74,9 @@ def get_script_paths():
     script = script_dir / "src" / "scripts" / "script.py"
     auto_test = script_dir / "src" / "scripts" / "script_auto_test.py"
     auto_test_vlm_agentic = script_dir / "src" / "scripts" / "script_auto_test_vlm_agentic.py"
-    return script_dir, script, auto_test, auto_test_vlm_agentic
+    auto_test_yolo_robot_state = script_dir / "src" / "scripts" / "script_auto_test_yolo_robot_state.py"
+    auto_test_yolo_vlm_recovery = script_dir / "src" / "scripts" / "script_auto_test_yolo_vlm_recovery.py"
+    return script_dir, script, auto_test, auto_test_vlm_agentic, auto_test_yolo_robot_state, auto_test_yolo_vlm_recovery
 
 
 def ensure_log_dir(script_dir):
@@ -226,6 +228,8 @@ def print_task_menu(config_path="<config_path>", use_color=True):
         ("run", "普通任务: 从当前位置直接运行模型"),
         ("auto_test", "自动测试任务：仿真中自动测试模型，执行 eval_episodes 次"),
         ("auto_test_vlm_agentic", "自动测试任务：仿真中测试vlm的failure detection，执行 eval_episodes 次"),
+        ("auto_test_yolo_robot_state", "自动测试任务：checkpoint 仿真推理 + YOLO/robot-state failure trigger"),
+        ("auto_test_yolo_vlm_recovery", "自动测试任务：YOLO/robot-state 触发 + Qwen3.5 failure type 与恢复"),
         ("back_to_zero", "普通任务: 回到零位"),
         ("back_to_start", "普通任务: 回到 start_bag 起始位"),
         ("offline_bag", "离线任务：从一条 bag 读取 obs，跑完整推理链路并和 bag action 做误差验证"),
@@ -247,6 +251,10 @@ def print_task_menu(config_path="<config_path>", use_color=True):
     print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test.py --task auto_test --config {config_path}{RESET}")
     print(f"vlm failure detection 自动测试任务:{RESET}")
     print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test_vlm_agentic.py --task auto_test_vlm_agentic --config {config_path}{RESET}")
+    print(f"YOLO robot-state trigger 自动测试任务:{RESET}")
+    print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test_yolo_robot_state.py --task auto_test_yolo_robot_state --config {config_path}{RESET}")
+    print(f"YOLO + VLM stage-2 recovery 自动测试任务:{RESET}")
+    print(f"{YELLOW}  python kuavo_deploy/src/scripts/script_auto_test_yolo_vlm_recovery.py --task auto_test_yolo_vlm_recovery --config {config_path}{RESET}")
 
 
 
@@ -255,7 +263,7 @@ def main():
     global current_proc, LOG_DIR
 
     print_header()
-    script_dir, script, auto_test, auto_test_vlm_agentic = get_script_paths()
+    script_dir, script, auto_test, auto_test_vlm_agentic, auto_test_yolo_robot_state, auto_test_yolo_vlm_recovery = get_script_paths()
     LOG_DIR = ensure_log_dir(script_dir)
 
     if not script.exists():
@@ -266,6 +274,12 @@ def main():
         sys.exit(1)
     if not auto_test_vlm_agentic.exists():
         print(f"错误: 找不到 script_auto_test_vlm_agentic.py 文件: {auto_test_vlm_agentic}")
+        sys.exit(1)
+    if not auto_test_yolo_robot_state.exists():
+        print(f"错误: 找不到 script_auto_test_yolo_robot_state.py 文件: {auto_test_yolo_robot_state}")
+        sys.exit(1)
+    if not auto_test_yolo_vlm_recovery.exists():
+        print(f"错误: 找不到 script_auto_test_yolo_vlm_recovery.py 文件: {auto_test_yolo_vlm_recovery}")
         sys.exit(1)
 
     # print("1. 执行: python script.py --help")
@@ -317,7 +331,7 @@ def main():
     while True:
         print_task_menu(config_path=config_path, use_color=True)
 
-        sub_choice = input("请选择要执行的示例 (1-8): ").strip()
+        sub_choice = input("请选择要执行的示例 (1-10): ").strip()
 
         def start_task(cmd):
             global current_proc
@@ -336,12 +350,16 @@ def main():
         elif sub_choice == "4":
             start_task(["python3", str(auto_test_vlm_agentic), "--task", "auto_test_vlm_agentic", "--config", config_path])
         elif sub_choice == "5":
-            start_task(["python3", str(script), "--task", "back_to_zero", "--config", config_path])
+            start_task(["python3", str(auto_test_yolo_robot_state), "--task", "auto_test_yolo_robot_state", "--config", config_path])
         elif sub_choice == "6":
-            start_task(["python3", str(script), "--task", "back_to_start", "--config", config_path])
+            start_task(["python3", str(auto_test_yolo_vlm_recovery), "--task", "auto_test_yolo_vlm_recovery", "--config", config_path])
         elif sub_choice == "7":
-            bag_path = input("请输入 bag 路径（留空则使用 inference.go_bag_path): ").strip()
+            start_task(["python3", str(script), "--task", "back_to_zero", "--config", config_path])
         elif sub_choice == "8":
+            start_task(["python3", str(script), "--task", "back_to_start", "--config", config_path])
+        elif sub_choice == "9":
+            bag_path = input("请输入 bag 路径（留空则使用 inference.go_bag_path): ").strip()
+        elif sub_choice == "10":
             print("退出")
             break
         else:

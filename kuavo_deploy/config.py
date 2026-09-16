@@ -201,6 +201,38 @@ class ConfigInference:
     async_low_watermark: int = 4
     async_warmup_actions: int = 1
     async_action_timeout: float = 1.0
+
+    # Online YOLO + robot-state failure trigger. Disabled by default so legacy
+    # automatic evaluation is unchanged. EE pose topics must publish
+    # geometry_msgs/PoseStamped in the simulator clock domain.
+    failure_trigger_enabled: bool = False
+    failure_trigger_ee_pose_topic_left: str = ""
+    failure_trigger_ee_pose_topic_right: str = ""
+    failure_trigger_pause_topic: str = "/kuavo/pause_state"
+    failure_trigger_yolo_model: str = "yolov8s-worldv2.pt"
+    failure_trigger_yolo_device: str = "0"
+    # Optional interpreter for an isolated YOLO environment. When set, YOLO
+    # runs as a worker process instead of importing ultralytics here.
+    failure_trigger_yolo_python: str = ""
+    failure_trigger_yolo_conf: float = 0.03
+    failure_trigger_yolo_iou: float = 0.5
+    failure_trigger_motion_window_s: float = 0.5
+    # Cartesian thresholds in m/s, used only when PoseStamped EE topics are
+    # configured. The planar XY speed drives the stage-1 comparison; Z speed
+    # is recorded separately for grasp/lift analysis.
+    failure_trigger_ee_motion_min: float = 0.02
+    failure_trigger_ee_vertical_motion_min: float = 0.02
+    failure_trigger_toy_motion_max: float = 0.012
+    failure_trigger_duration_s: float = 1.0
+    failure_trigger_confirm_frames: int = 2
+    failure_trigger_pose_max_age_s: float = 0.10
+    # Do not evaluate cross-signal stagnation during the expected approach /
+    # pregrasp phase. Set per task from observed simulator timing.
+    failure_trigger_start_after_s: float = 0.0
+    # The usual simulator configuration exposes only observation.state
+    # (joint_q + gripper). Enable this explicitly to use its per-step joint
+    # motion as a fallback when an EE PoseStamped topic is unavailable.
+    failure_trigger_allow_joint_state_fallback: bool = False
     def validate(self):
         supported_policy_types = [
             "",
