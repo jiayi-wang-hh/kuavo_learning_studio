@@ -143,6 +143,33 @@ def center_xyxy(box):
     return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
 
 
+def sam3_mask_box(mask):
+    """Return an absolute-pixel XYXY box from one SAM3 binary mask.
+
+    SAM3's video postprocessor returns ``out_binary_masks`` at the original
+    video resolution with shape ``(N, H, W)``.  Keep this conversion local to
+    the SAM3 backend so the independently working SAM2 path is unchanged.
+    """
+    import numpy as np
+
+    mask = np.asarray(mask)
+    # Some SAM3 revisions retain a singleton channel dimension per object.
+    mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        raise ValueError(f"Expected one SAM3 mask with shape (H, W), got {mask.shape}")
+    if mask.dtype != np.bool_:
+        mask = mask > 0
+    ys, xs = np.where(mask)
+    if not len(xs):
+        return None
+    return (
+        float(xs.min()),
+        float(ys.min()),
+        float(xs.max() + 1),
+        float(ys.max() + 1),
+    )
+
+
 def run_sam3(video, rollout, seeds):
     try:
         import numpy as np
@@ -151,13 +178,6 @@ def run_sam3(video, rollout, seeds):
         raise RuntimeError(
             "SAM3 backend requires the SAM3 package to be installed."
         ) from exc
-
-    import cv2
-
-    cap = cv2.VideoCapture(str(video))
-    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    cap.release()
 
     predictor = build_sam3_video_predictor()
 
@@ -210,6 +230,7 @@ def run_sam3(video, rollout, seeds):
 
         nonempty_frames = 0
         matched_frames = 0
+        debug_frames_printed = 0
 
         for item in predictor.handle_stream_request(
             {
@@ -235,6 +256,10 @@ def run_sam3(video, rollout, seeds):
                 dtype=np.float32,
             )
 
+            out_masks = np.asarray(
+                output.get("out_binary_masks", []),
+            )
+
             out_scores = np.asarray(
                 output.get("out_probs", []),
                 dtype=np.float32,
@@ -243,28 +268,55 @@ def run_sam3(video, rollout, seeds):
             if len(out_ids) > 0:
                 nonempty_frames += 1
 
-            for tracked_id, box, score in zip(
-                out_ids,
-                out_boxes,
-                out_scores,
-            ):
+            for index, tracked_id in enumerate(out_ids):
                 if int(tracked_id) != obj_id:
                     continue
 
-                matched_frames += 1
+                if index >= len(out_masks):
+                    raise ValueError(
+                        f"SAM3 frame {frame_id}: object index {index} has no corresponding "
+                        f"mask; ids shape={out_ids.shape}, masks shape={out_masks.shape}"
+                    )
 
-                x, y, w, h = map(float, box)
+                matched_frames += 1
+                raw_box = out_boxes[index] if index < len(out_boxes) else None
+                score = float(out_scores[index]) if index < len(out_scores) else 0.0
+                mask = out_masks[index]
+
+                # SAM3's authoritative spatial output is the full-resolution
+                # binary mask.  Its out_boxes_xywh field is normalized XYWH
+                # derived from a mask inside SAM3's postprocessor.  Derive the
+                # benchmark box from the returned final mask instead, yielding
+                # absolute-pixel XYXY and avoiding assumptions about a box
+                # field that has varied across SAM3 revisions.
+                box = sam3_mask_box(mask)
+
+                if rollout == "rollout21" and side == "left_toy" and debug_frames_printed < 3:
+                    mask_array = np.asarray(mask)
+                    print(
+                        f"[SAM3 DEBUG] frame={frame_id}, obj_id={int(tracked_id)}, "
+                        f"output_keys={list(output.keys())}, "
+                        f"raw_box={None if raw_box is None else np.asarray(raw_box).tolist()}, "
+                        f"raw_box_shape={None if raw_box is None else np.asarray(raw_box).shape}, "
+                        f"mask_shape={mask_array.shape}, "
+                        f"mask_pixels={int(np.count_nonzero(mask_array))}, "
+                        f"final_xyxy={box}"
+                    )
+                    debug_frames_printed += 1
+
+                if box is None:
+                    continue
 
                 rows.append(
                     {
                         "rollout": rollout,
                         "frame": frame_id,
                         "side": side,
-                        "x1": x * width,
-                        "y1": y * height,
-                        "x2": (x + w) * width,
-                        "y2": (y + h) * height,
-                        "score": float(score),
+                        "x1": box[0],
+                        "y1": box[1],
+                        "x2": box[2],
+                        "y2": box[3],
+                        "score": score,
                         "source": "SAM3_PROPAGATED",
                     }
                 )
