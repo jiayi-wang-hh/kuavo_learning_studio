@@ -148,48 +148,140 @@ def run_sam3(video, rollout, seeds):
         import numpy as np
         from sam3.model_builder import build_sam3_video_predictor
     except ImportError as exc:
-        raise RuntimeError("Install the official facebookresearch/sam3 package") from exc
+        raise RuntimeError(
+            "SAM3 backend requires the SAM3 package to be installed."
+        ) from exc
+
     import cv2
+
     cap = cv2.VideoCapture(str(video))
-    width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     cap.release()
-    seed_frame = next(iter(seeds.values()))[0]
+
     predictor = build_sam3_video_predictor()
+
     rows = []
-    # SAM 3 accepts one initial visual box per inference state. Independent
-    # sessions prevent the second toy's box from becoming a refinement of the
-    # first toy, while both still use the exact shared manifest.
+
     for side in ("left_toy", "right_toy"):
-        x1, y1, x2, y2 = seeds[side][1]
-        box = [[((x1 + x2) / 2) / width, ((y1 + y2) / 2) / height,
-                (x2 - x1) / width, (y2 - y1) / height]]
-        session = predictor.handle_request({"type": "start_session", "resource_path": str(video)})
+        seed_frame, seed_box = seeds[side]
+
+        x1, y1, x2, y2 = seed_box
+
+        # Use the center of the initializer bbox as a positive tracker point.
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+
+        # Independent session for each toy.
+        session = predictor.handle_request(
+            {
+                "type": "start_session",
+                "resource_path": str(video),
+            }
+        )
         session_id = session["session_id"]
-        response = predictor.handle_request({
-            "type": "add_prompt", "session_id": session_id, "frame_index": seed_frame,
-            "bounding_boxes": box, "bounding_box_labels": [1],
-        })
+
+        # Since each toy uses its own session, obj_id=0 is sufficient.
+        obj_id = 0
+
+        response = predictor.handle_request(
+            {
+                "type": "add_prompt",
+                "session_id": session_id,
+                "frame_index": seed_frame,
+                "points": [[cx, cy]],
+                "point_labels": [1],
+                "obj_id": obj_id,
+
+                # cx, cy are absolute image pixel coordinates.
+                "rel_coordinates": False,
+            }
+        )
+
         initial = response["outputs"]
-        ids = np.asarray(initial["out_obj_ids"].detach().cpu() if hasattr(initial["out_obj_ids"], "detach") else initial["out_obj_ids"])
-        initial_boxes = np.asarray(initial["out_boxes_xywh"].detach().cpu() if hasattr(initial["out_boxes_xywh"], "detach") else initial["out_boxes_xywh"])
-        if not len(ids):
-            raise RuntimeError(f"SAM 3 returned no object for {rollout}/{side} seed")
-        target = center_xyxy(seeds[side][1])
-        index = min(range(len(ids)), key=lambda i: (initial_boxes[i][0] * width - target[0]) ** 2 +
-                                              (initial_boxes[i][1] * height - target[1]) ** 2)
-        selected_id = int(ids[index])
-        for item in predictor.handle_stream_request({"type": "propagate_in_video", "session_id": session_id}):
-            frame_id, output = int(item["frame_index"]), item["outputs"]
+
+        print(
+            f"[SAM3 INIT] {rollout}/{side}: "
+            f"seed_frame={seed_frame}, "
+            f"point=({cx:.1f}, {cy:.1f}), "
+            f"obj_id={obj_id}, "
+            f"output_keys={list(initial.keys()) if isinstance(initial, dict) else type(initial)}"
+        )
+
+        nonempty_frames = 0
+        matched_frames = 0
+
+        for item in predictor.handle_stream_request(
+            {
+                "type": "propagate_in_video",
+                "session_id": session_id,
+                "start_frame_index": seed_frame,
+            }
+        ):
+            frame_id = int(item["frame_index"])
+
             if frame_id < seed_frame:
                 continue
-            out_ids = output["out_obj_ids"].detach().cpu().numpy() if hasattr(output["out_obj_ids"], "detach") else np.asarray(output["out_obj_ids"])
-            out_boxes = output["out_boxes_xywh"].detach().cpu().numpy() if hasattr(output["out_boxes_xywh"], "detach") else np.asarray(output["out_boxes_xywh"])
-            out_scores = output["out_probs"].detach().cpu().numpy() if hasattr(output["out_probs"], "detach") else np.asarray(output["out_probs"])
-            for object_id, (x, y, w, h), score in zip(out_ids, out_boxes, out_scores):
-                if int(object_id) == selected_id:
-                    rows.append(dict(rollout=rollout, frame=frame_id, side=side,
-                                     x1=x * width, y1=y * height, x2=(x + w) * width, y2=(y + h) * height,
-                                     score=float(score), source="SAM3_PROPAGATED"))
+
+            output = item["outputs"]
+
+            out_ids = np.asarray(
+                output.get("out_obj_ids", []),
+                dtype=np.int64,
+            )
+
+            out_boxes = np.asarray(
+                output.get("out_boxes_xywh", []),
+                dtype=np.float32,
+            )
+
+            out_scores = np.asarray(
+                output.get("out_probs", []),
+                dtype=np.float32,
+            )
+
+            if len(out_ids) > 0:
+                nonempty_frames += 1
+
+            for tracked_id, box, score in zip(
+                out_ids,
+                out_boxes,
+                out_scores,
+            ):
+                if int(tracked_id) != obj_id:
+                    continue
+
+                matched_frames += 1
+
+                x, y, w, h = map(float, box)
+
+                rows.append(
+                    {
+                        "rollout": rollout,
+                        "frame": frame_id,
+                        "side": side,
+                        "x1": x * width,
+                        "y1": y * height,
+                        "x2": (x + w) * width,
+                        "y2": (y + h) * height,
+                        "score": float(score),
+                        "source": "SAM3_PROPAGATED",
+                    }
+                )
+
+        print(
+            f"[SAM3 SUMMARY] {rollout}/{side}: "
+            f"nonempty_frames={nonempty_frames}, "
+            f"matched_frames={matched_frames}"
+        )
+
+        predictor.handle_request(
+            {
+                "type": "close_session",
+                "session_id": session_id,
+            }
+        )
+
     return rows
 
 

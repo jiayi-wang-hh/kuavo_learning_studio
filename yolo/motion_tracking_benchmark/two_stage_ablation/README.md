@@ -53,34 +53,34 @@ do not relabel a toy after it crosses the image centre.
 ```bash
 python yolo/motion_tracking_benchmark/two_stage_ablation/generate_yolo_world_initializer.py \
   --backend yolo_world \
-  --gt gt_boxes.csv \
+  --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --video-dir /media/data/jiayi/dataset/toy_to_annotat \
   --output outputs/motion_tracking/yolo_world_initializer.csv
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  initializer --gt gt_boxes.csv \
+  initializer --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --pred outputs/motion_tracking/yolo_world_initializer.csv \
   --name yolo_world --output outputs/two_stage/yolo_world_initializer.json
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/generate_yolo_world_initializer.py \
   --backend grounding_dino \
-  --gt gt_boxes.csv \
+  --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --video-dir /media/data/jiayi/dataset/toy_to_annotat \
   --output outputs/motion_tracking/grounding_dino_initializer.csv
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  initializer --gt gt_boxes.csv \
+  initializer --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --pred outputs/motion_tracking/grounding_dino_initializer.csv \
   --name grounding_dino --output outputs/two_stage/grounding_dino_initializer.json
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/generate_yolo_world_initializer.py \
   --backend sam3 \
-  --gt gt_boxes.csv \
+  --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --video-dir /media/data/jiayi/dataset/toy_to_annotat \
   --output outputs/motion_tracking/sam3_text_initializer.csv
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  initializer --gt gt_boxes.csv \
+  initializer --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv \
   --pred outputs/motion_tracking/sam3_text_initializer.csv \
   --name sam3_text --output outputs/two_stage/sam3_text_initializer.json
 ```
@@ -98,7 +98,7 @@ Create the single shared seed manifest first:
 
 ```bash
 python yolo/motion_tracking_benchmark/two_stage_ablation/make_seed_manifest.py \
-  --gt gt_boxes.csv --output outputs/two_stage/seeds.csv
+  --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv --output outputs/two_stage/seeds.csv
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/run_seeded_tracker.py \
   --backend csrt \
@@ -110,7 +110,7 @@ python yolo/motion_tracking_benchmark/two_stage_ablation/run_seeded_tracker.py \
   --backend sam2 \
   --seeds outputs/two_stage/seeds.csv \
   --video-dir /media/data/jiayi/dataset/toy_to_annotat \
-  --sam2-config /media/data/jiayi/sam2/configs/sam2.1/sam2.1_hiera_s.yaml \
+  --sam2-config configs/sam2.1/sam2.1_hiera_s.yaml \
   --sam2-checkpoint /media/data/jiayi/sam2/checkpoints/sam2.1_hiera_small.pt \
   --output outputs/two_stage/sam2_predictions.csv
 
@@ -127,15 +127,15 @@ each tracker with the same command shape:
 
 ```bash
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  tracker --gt gt_boxes.csv --pred outputs/two_stage/csrt_predictions.csv \
+  tracker --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv --pred outputs/two_stage/csrt_predictions.csv \
   --name csrt --output outputs/two_stage/csrt_tracker.json
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  tracker --gt gt_boxes.csv --pred outputs/two_stage/sam2_predictions.csv \
+  tracker --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv --pred outputs/two_stage/sam2_predictions.csv \
   --name sam2 --output outputs/two_stage/sam2_tracker.json
 
 python yolo/motion_tracking_benchmark/two_stage_ablation/evaluate_two_stage.py \
-  tracker --gt gt_boxes.csv --pred outputs/two_stage/sam3_predictions.csv \
+  tracker --gt yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv --pred outputs/two_stage/sam3_predictions.csv \
   --name sam3 --output outputs/two_stage/sam3_tracker.json
 ```
 

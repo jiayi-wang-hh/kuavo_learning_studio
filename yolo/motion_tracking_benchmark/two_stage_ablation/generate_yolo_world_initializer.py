@@ -150,15 +150,39 @@ def make_detector(args: argparse.Namespace):
         from sam3.model.sam3_image_processor import Sam3Processor
     except ImportError as exc:
         raise RuntimeError("SAM 3 needs the official facebookresearch/sam3 installation") from exc
-    processor = Sam3Processor(build_sam3_image_model())
+    
+    import torch
+
+    device = f"cuda:{args.device}" if str(args.device).isdigit() else args.device
+
+    sam3_model = build_sam3_image_model()
+    sam3_model = build_sam3_image_model()
+    sam3_model.eval()
+
+    processor = Sam3Processor(sam3_model)
 
     def detect(frame):
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        state = processor.set_image(image)
-        output = processor.set_text_prompt(state=state, prompt="toy")
-        return [Detection(tuple(float(v) for v in box.detach().cpu().tolist()), float(score))
-                for box, score in zip(output["boxes"], output["scores"])
-                if float(score) >= args.conf]
+
+        with torch.inference_mode():
+            with torch.autocast(
+                device_type="cuda",
+                dtype=torch.bfloat16,
+            ):
+                state = processor.set_image(image)
+                output = processor.set_text_prompt(
+                    state=state,
+                    prompt="toy",
+                )
+
+        return [
+            Detection(
+                tuple(float(v) for v in box.detach().cpu().tolist()),
+                float(score),
+            )
+            for box, score in zip(output["boxes"], output["scores"])
+            if float(score) >= args.conf
+        ]
 
     return detect
 
