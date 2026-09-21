@@ -192,6 +192,15 @@ def run_sam3(video, rollout, seeds):
             "SAM3 backend requires the SAM3 package to be installed."
         ) from exc
 
+    import cv2
+
+    capture = cv2.VideoCapture(str(video))
+    width = float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    capture.release()
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"Cannot read video dimensions: {video}")
+
     predictor = build_sam3_video_predictor()
 
     rows = []
@@ -216,20 +225,25 @@ def run_sam3(video, rollout, seeds):
         # Route the seed through SAM3's *instance tracker* point API.  The
         # underlying tracker represents a box as two special point prompts:
         # label 2 is the top-left corner and label 3 is the bottom-right
-        # corner.  Using ``bounding_boxes`` here would instead select SAM3's
-        # semantic/visual-prompt path and would not initialize this explicit
-        # obj_id in the same way.
+        # corner.  With rel_coordinates=True, the tracker converts these
+        # normalized original-video coordinates to its square model canvas.
+        # This is exactly the transform performed by its internal ``box=``
+        # path before that path appends labels 2 and 3.  Using the public
+        # ``bounding_boxes`` request field would instead select SAM3's
+        # semantic/visual-prompt path, not this explicit obj_id tracker path.
+        tracker_box_points = [
+            [x1 / width, y1 / height],
+            [x2 / width, y2 / height],
+        ]
         response = predictor.handle_request(
             {
                 "type": "add_prompt",
                 "session_id": session_id,
                 "frame_index": seed_frame,
-                "points": [[x1, y1], [x2, y2]],
+                "points": tracker_box_points,
                 "point_labels": [2, 3],
                 "obj_id": obj_id,
-
-                # The seed corners are absolute image pixel coordinates.
-                "rel_coordinates": False,
+                "rel_coordinates": True,
             }
         )
 
@@ -251,7 +265,7 @@ def run_sam3(video, rollout, seeds):
             f"[SAM3 INIT] {rollout}/{side}: "
             f"seed_frame={seed_frame}, "
             f"seed_box={seed_box}, "
-            f"tracker_box_points={[[x1, y1], [x2, y2]]}, "
+            f"tracker_box_points_normalized={tracker_box_points}, "
             f"point_labels={[2, 3]}, "
             f"obj_id={obj_id}, "
             f"output_keys={list(initial.keys()) if isinstance(initial, dict) else type(initial)}, "
