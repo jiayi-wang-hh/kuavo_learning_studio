@@ -840,6 +840,8 @@ def main():
         else:
             from sam3_adapter import run_sam3 as run_video_backend
 
+        batch_output_dir = args.output_dir
+        summaries = []
         for i, video_path in enumerate(
             video_paths,
             start=1,
@@ -866,9 +868,30 @@ def main():
             original_output_dir = args.output_dir
             args.output_dir = output_dir
 
-            run_video_backend(args)
+            try:
+                run_video_backend(args)
+                summary_path = output_dir / "summary.json"
+                if not summary_path.is_file():
+                    raise RuntimeError(
+                        f"Video backend did not write its summary: {summary_path}"
+                    )
+                summaries.append(json.loads(summary_path.read_text(encoding="utf-8")))
+            finally:
+                args.output_dir = original_output_dir
 
-            args.output_dir = original_output_dir
+        batch_summary = {
+            "backend": args.backend,
+            "input_dir": str(args.input_dir),
+            "num_videos": len(video_paths),
+            "videos": summaries,
+        }
+        (batch_output_dir / "batch_summary.json").write_text(
+            json.dumps(batch_summary, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print("\n=== DONE ===")
+        print(f"Processed {len(video_paths)} videos.")
+        print(f"Results: {batch_output_dir}")
 
         return
 
