@@ -1,0 +1,18 @@
+{
+  "gt_visible_boxes": 90,
+  "predicted_boxes": 48,
+  "matched_at_iou": 0,
+  "recall_at_iou": 0.0,
+  "mean_iou": 0.04166700948009311,
+  "mean_center_error_px": 93.01777343258912,
+  "side_recall": {
+    "left_toy": 0.0,
+    "right_toy": 0.0
+  },
+  "both_toys_recall_at_iou": 0.0,
+  "stage": "initializer",
+  "condition": "yolo_world",
+  "iou_threshold": 0.5,
+  "gt": "yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv",
+  "pred": "outputs/motion_tracking/yolo_world_initializer.csv"
+}

@@ -1,0 +1,10 @@
+{
+  "backend": "csrt",
+  "seeds": "outputs/two_stage/seeds.csv",
+  "videos": {
+    "rollout21": "/media/data/jiayi/dataset/toy_to_annotat/rollout21_head.mp4",
+    "rollout22": "/media/data/jiayi/dataset/toy_to_annotat/rollout22_head.mp4",
+    "rollout23": "/media/data/jiayi/dataset/toy_to_annotat/rollout23_head.mp4"
+  },
+  "rows": 892
+}

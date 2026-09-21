@@ -1,0 +1,18 @@
+{
+  "gt_visible_boxes": 90,
+  "predicted_boxes": 892,
+  "matched_at_iou": 60,
+  "recall_at_iou": 0.6666666666666666,
+  "mean_iou": 0.5505715883982225,
+  "mean_center_error_px": 18.82024515130731,
+  "side_recall": {
+    "left_toy": 0.6444444444444445,
+    "right_toy": 0.6888888888888889
+  },
+  "both_toys_recall_at_iou": 0.5555555555555556,
+  "stage": "tracker",
+  "condition": "csrt",
+  "iou_threshold": 0.5,
+  "gt": "yolo/motion_tracking_benchmark/two_stage_ablation/gt_boxes.csv",
+  "pred": "outputs/two_stage/csrt_predictions.csv"
+}
