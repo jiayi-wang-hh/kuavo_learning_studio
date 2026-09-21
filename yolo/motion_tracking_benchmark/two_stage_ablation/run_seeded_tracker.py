@@ -188,10 +188,6 @@ def run_sam3(video, rollout, seeds):
 
         x1, y1, x2, y2 = seed_box
 
-        # Use the center of the initializer bbox as a positive tracker point.
-        cx = (x1 + x2) / 2.0
-        cy = (y1 + y2) / 2.0
-
         # Independent session for each toy.
         session = predictor.handle_request(
             {
@@ -204,29 +200,62 @@ def run_sam3(video, rollout, seeds):
         # Since each toy uses its own session, obj_id=0 is sufficient.
         obj_id = 0
 
+        # Route the seed through SAM3's *instance tracker* point API.  The
+        # underlying tracker represents a box as two special point prompts:
+        # label 2 is the top-left corner and label 3 is the bottom-right
+        # corner.  Using ``bounding_boxes`` here would instead select SAM3's
+        # semantic/visual-prompt path and would not initialize this explicit
+        # obj_id in the same way.
         response = predictor.handle_request(
             {
                 "type": "add_prompt",
                 "session_id": session_id,
                 "frame_index": seed_frame,
-                "points": [[cx, cy]],
-                "point_labels": [1],
+                "points": [[x1, y1], [x2, y2]],
+                "point_labels": [2, 3],
                 "obj_id": obj_id,
 
-                # cx, cy are absolute image pixel coordinates.
+                # The seed corners are absolute image pixel coordinates.
                 "rel_coordinates": False,
             }
         )
 
         initial = response["outputs"]
 
+        # Diagnostic only: do not reject, replace, or fall back when the
+        # initial mask disagrees with the initializer seed.
+        initial_ids = np.asarray(initial.get("out_obj_ids", []), dtype=np.int64)
+        initial_masks = np.asarray(initial.get("out_binary_masks", []))
+        initial_box = None
+        matching_indices = np.flatnonzero(initial_ids == obj_id)
+        if len(matching_indices) > 0:
+            initial_index = int(matching_indices[0])
+            if initial_index < len(initial_masks):
+                initial_box = sam3_mask_box(initial_masks[initial_index])
+        init_iou = box_iou(seed_box, initial_box) if initial_box is not None else None
+
         print(
             f"[SAM3 INIT] {rollout}/{side}: "
             f"seed_frame={seed_frame}, "
-            f"point=({cx:.1f}, {cy:.1f}), "
+            f"seed_box={seed_box}, "
+            f"tracker_box_points={[[x1, y1], [x2, y2]]}, "
+            f"point_labels={[2, 3]}, "
             f"obj_id={obj_id}, "
-            f"output_keys={list(initial.keys()) if isinstance(initial, dict) else type(initial)}"
+            f"output_keys={list(initial.keys()) if isinstance(initial, dict) else type(initial)}, "
+            f"initial_mask_box={initial_box}, "
+            f"init_iou={init_iou}"
         )
+        if init_iou is None:
+            print(
+                f"[SAM3 INIT WARNING] {rollout}/{side}: no non-empty mask for "
+                f"obj_id={obj_id} on seed frame {seed_frame}"
+            )
+        elif init_iou < 0.10:
+            print(
+                f"[SAM3 INIT WARNING] {rollout}/{side}: initial mask/seed IoU "
+                f"is {init_iou:.4f} (< 0.10); propagation will track an "
+                f"incorrectly initialized mask"
+            )
 
         nonempty_frames = 0
         matched_frames = 0
