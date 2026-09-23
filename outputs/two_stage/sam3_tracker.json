@@ -1,15 +1,15 @@
 {
   "gt_visible_boxes": 90,
-  "predicted_boxes": 892,
-  "matched_at_iou": 0,
-  "recall_at_iou": 0.0,
-  "mean_iou": 0.005125069187645957,
-  "mean_center_error_px": 145.66124099471105,
+  "predicted_boxes": 878,
+  "matched_at_iou": 84,
+  "recall_at_iou": 0.9333333333333333,
+  "mean_iou": 0.7074684336733023,
+  "mean_center_error_px": 3.750057494033879,
   "side_recall": {
-    "left_toy": 0.0,
-    "right_toy": 0.0
+    "left_toy": 0.9555555555555556,
+    "right_toy": 0.9111111111111111
   },
-  "both_toys_recall_at_iou": 0.0,
+  "both_toys_recall_at_iou": 0.8888888888888888,
   "stage": "tracker",
   "condition": "sam3",
   "iou_threshold": 0.5,
