@@ -17,4 +17,4 @@ inference:  # 推理和评测设置
   pretrained_path: /path/to/checkpoint # 要加载的权重路径。
   eval_episodes: 10  # 评测跑多少条
   max_episode_steps: 200  # 每条最多跑多少步
-  task_prompt: "pick the both bottles"
+  task_prompt: "pick up the both bottles"

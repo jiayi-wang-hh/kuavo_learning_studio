@@ -70,12 +70,15 @@ adapters:
       mode: conda
       conda_env: lingbotvla
     args:
-      checkpoint: /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt
+      checkpoint: /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt
+      # /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt
       # /media/data/jiayi/outputs/lingbot-package/global_step_66480/hf_ckpt                # 必填：hf_ckpt 目录
-      training_config_path: /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt/lingbotvla_cli.yaml
+      training_config_path: /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt/lingbotvla_cli.yaml
       # /media/data/jiayi/outputs/lingbot-package/global_step_66480/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
       qwen25_path: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct                       # 必填：Qwen2.5-VL tokenizer/model 目录
-      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_apple.json
+      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo.json
+      #/home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_apple.json
       # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_package.json              # 必填：Kuavo norm stats JSON
       robot_config_path: ""                                   # 留空 -> kuavo_server/configs/lingbotvla/kuavo.yaml
       which_arm: both
