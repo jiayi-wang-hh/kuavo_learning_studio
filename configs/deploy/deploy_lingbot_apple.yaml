@@ -1,0 +1,20 @@
+env:  # 推理环境设置
+  inference_env: real  # 选仿真还是真机 option: sim/real 
+  platform_type: "4pro"  # 机器人型号，选项: "4pro", "5w" 或 "5"
+  which_arm: both  # 控制左手、右手还是双手
+  eef_type: qiangnao  # 夹爪或手型类型，仿真选择rq2f85，真机可选leju_claw（夹爪） qiangnao（灵巧手）
+  ros_rate: 10  # 推理频率
+  direct_to_wbc: false  # 是否开启direct to wbc模式。
+  enable_action_interpolation: true # 开启direct to wbc后是否对动作进行插值，建议开启
+  control_rate: 100  # WBC/插值后的实际控制指令频率
+  image_size: [848, 480]  # 相机缩放尺寸 option: [640, 480] (仿真)/ [848, 480] (真机）
+
+  
+
+inference:  # 推理和评测设置
+  go_bag_path: /home/kuavo/yuanmeng/start_bag/startbag_bottlepick_clipped.bag # 推理时使用的rosbag路径
+  policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
+  pretrained_path: /path/to/checkpoint # 要加载的权重路径。
+  eval_episodes: 10  # 评测跑多少条
+  max_episode_steps: 200  # 每条最多跑多少步
+  task_prompt: "pick up the red apple from the clustered scene"
