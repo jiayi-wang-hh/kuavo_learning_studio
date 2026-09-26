@@ -233,3 +233,5 @@ kuavo_server/README.md
 # mac format
 .DS_Store
 **/.DS_Store
+
+*.pt
