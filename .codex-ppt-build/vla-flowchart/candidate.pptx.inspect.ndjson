@@ -1,0 +1,82 @@
+{"kind":"deck","id":"pr/t3ublk","name":"Deck"}
+{"kind":"layout","layoutId":"409ca3d6-ec3c-4b2b-a2c1-16ba9c6462e2","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"5232fdea-5334-4b1c-bec8-9412565830a8","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/9r1bsb","slide":1,"title":"LingBot-VLA 到 Kuavo v42 真机的执行链路","textShapes":40}
+{"kind":"textbox","id":"sh/x4rqx07e","slide":1,"text":"LingBot-VLA 到 Kuavo v42 真机的执行链路","textPreview":"LingBot-VLA 到 Kuavo v42 真机的执行链路","textChars":31,"textLines":1,"bbox":[54,34,1172,48]}
+{"kind":"textbox","id":"sh/a1g7m5o3","slide":1,"text":"kuavo_learning_studio  ×  kuavo-ros-opensource 1.3.3","textPreview":"kuavo_learning_studio  ×  kuavo-ros-opensource 1.3.3","textChars":52,"textLines":1,"bbox":[56,80,900,24]}
+{"kind":"shape","id":"sh/b298vapo","slide":1,"bbox":[48,112,276,526]}
+{"kind":"shape","id":"sh/k7ipsf65","slide":1,"bbox":[60,126,252,62]}
+{"kind":"textbox","id":"sh/l8rq1k7q","slide":1,"text":"VLA / Application","textPreview":"VLA / Application","textChars":17,"textLines":1,"bbox":[72,132,228,28]}
+{"kind":"textbox","id":"sh/y507q5oz","slide":1,"text":"kuavo_learning_studio","textPreview":"kuavo_learning_studio","textChars":21,"textLines":1,"bbox":[72,160,228,20]}
+{"kind":"shape","id":"sh/z698zapk","slide":1,"bbox":[348,112,276,526]}
+{"kind":"shape","id":"sh/8v2pwf61","slide":1,"bbox":[360,126,252,62]}
+{"kind":"textbox","id":"sh/9wbq5k7m","slide":1,"text":"Kuavo SDK","textPreview":"Kuavo SDK","textChars":9,"textLines":1,"bbox":[372,132,228,28]}
+{"kind":"textbox","id":"sh/58bmt4v2","slide":1,"text":"kuavo_humanoid_sdk 1.3.3","textPreview":"kuavo_humanoid_sdk 1.3.3","textChars":24,"textLines":1,"bbox":[372,160,228,20]}
+{"kind":"shape","id":"sh/k72lkjuh","slide":1,"bbox":[648,112,330,526]}
+{"kind":"shape","id":"sh/j6tkredw","slide":1,"bbox":[660,126,306,62]}
+{"kind":"textbox","id":"sh/i5k3i9cb","slide":1,"text":"ROS Controller / WBC","textPreview":"ROS Controller / WBC","textChars":20,"textLines":1,"bbox":[672,132,282,28]}
+{"kind":"textbox","id":"sh/tcvmxovy","slide":1,"text":"humanoidController","textPreview":"humanoidController","textChars":18,"textLines":1,"bbox":[672,160,282,20]}
+{"kind":"shape","id":"sh/sbmlojut","slide":1,"bbox":[1002,112,230,526]}
+{"kind":"shape","id":"sh/7ad4ved8","slide":1,"bbox":[1014,126,206,62]}
+{"kind":"textbox","id":"sh/6943m9cn","slide":1,"text":"Hardware","textPreview":"Hardware","textChars":8,"textLines":1,"bbox":[1026,132,182,28]}
+{"kind":"textbox","id":"sh/9gr2lkvu","slide":1,"text":"真机执行","textPreview":"真机执行","textChars":4,"textLines":1,"bbox":[1026,160,182,20]}
+{"kind":"shape","id":"sh/8filcfu9","slide":1,"bbox":[66,210,240,91]}
+{"kind":"textbox","id":"sh/0jml8z25","slide":1,"text":"LingBot-VLA","textPreview":"LingBot-VLA","textChars":11,"textLines":1,"bbox":[78,217,216,27]}
+{"kind":"textbox","id":"sh/1kvm143q","slide":1,"text":"模型输出 action 16D\n[L q7, L hand, R q7, R hand]","textPreview":"模型输出 action 16D | [L q7, L hand, R q7, R hand]","textChars":44,"textLines":2,"bbox":[79,246,214,48]}
+{"kind":"shape","id":"sh/eh436pkz","slide":1,"bbox":[66,326,240,98]}
+{"kind":"textbox","id":"sh/zid4zulk","slide":1,"text":"FeatureTransform.unapply()","textPreview":"FeatureTransform.unapply()","textChars":26,"textLines":1,"bbox":[78,333,216,27]}
+{"kind":"textbox","id":"sh/on6lcz2h","slide":1,"text":"反归一化\narm delta + current state\n得到 absolute q，单位 rad","textPreview":"反归一化 | arm delta + current state | 得到 absolute q，单位 rad","textChars":51,"textLines":3,"bbox":[79,362,214,55]}
+{"kind":"shape","id":"sh/9ofm543m","slide":1,"bbox":[66,449,240,94]}
+{"kind":"textbox","id":"sh/ml43apkb","slide":1,"text":"KuavoBaseRosEnv.exec_action()","textPreview":"KuavoBaseRosEnv.exec_action()","textChars":29,"textLines":1,"bbox":[78,456,216,27]}
+{"kind":"textbox","id":"sh/nmx43ulw","slide":1,"text":"拆出 q14 与 gripper2\nq14 交给 Kuavo SDK","textPreview":"拆出 q14 与 gripper2 | q14 交给 Kuavo SDK","textChars":34,"textLines":2,"bbox":[79,485,214,51]}
+{"kind":"shape","id":"sh/wr6lgj2d","slide":1,"bbox":[90,568,192,50]}
+{"kind":"textbox","id":"sh/xcfm9o3y","slide":1,"text":"_control_eef()\n左右手独立执行链","textPreview":"_control_eef() | 左右手独立执行链","textChars":23,"textLines":2,"bbox":[102,575,168,36]}
+{"kind":"shape","id":"sh/761ozi50","slide":1,"bbox":[186,301,0,25]}
+{"kind":"shape","id":"sh/6l876d4f","slide":1,"bbox":[186,424,0,25]}
+{"kind":"shape","id":"sh/t8j61sn6","slide":1,"bbox":[186,543,0,25]}
+{"kind":"shape","id":"sh/87ap8nml","slide":1,"bbox":[366,210,240,98]}
+{"kind":"textbox","id":"sh/jihovy54","slide":1,"text":"KuavoRobot","textPreview":"KuavoRobot","textChars":10,"textLines":1,"bbox":[378,217,216,27]}
+{"kind":"textbox","id":"sh/yh8n2t4j","slide":1,"text":"control_arm_joint_positions(q14)\n14 DoF 校验与 joint-limit clipping","textPreview":"control_arm_joint_positions(q14) | 14 DoF 校验与 joint-limit clipping","textChars":64,"textLines":2,"bbox":[379,246,214,55]}
+{"kind":"shape","id":"sh/lkz6x8nu","slide":1,"bbox":[366,334,240,98]}
+{"kind":"textbox","id":"sh/kjq543mp","slide":1,"text":"KuavoRobotCore","textPreview":"KuavoRobotCore","textChars":14,"textLines":1,"bbox":[378,341,216,27]}
+{"kind":"textbox","id":"sh/3elo7258","slide":1,"text":"碰撞保护\n切换 ExternalControl","textPreview":"碰撞保护 | 切换 ExternalControl","textChars":23,"textLines":2,"bbox":[379,370,214,55]}
+{"kind":"shape","id":"sh/idc7ex4n","slide":1,"bbox":[366,458,240,104]}
+{"kind":"textbox","id":"sh/qlsr2h07","slide":1,"text":"ControlRobotArm","textPreview":"ControlRobotArm","textChars":15,"textLines":1,"bbox":[378,465,216,27]}
+{"kind":"textbox","id":"sh/bm1svm1c","slide":1,"text":"pub_control_robot_arm_traj()\nrad 转 degree\n构造 sensor_msgs/JointState","textPreview":"pub_control_robot_arm_traj() | rad 转 degree | 构造 sensor_msgs/JointState","textChars":67,"textLines":3,"bbox":[379,494,214,61]}
+{"kind":"shape","id":"sh/cna94rix","slide":1,"bbox":[486,308,0,26]}
+{"kind":"shape","id":"sh/dojaxwji","slide":1,"bbox":[486,432,0,26]}
+{"kind":"shape","id":"sh/2x8ryhkv","slide":1,"bbox":[306,259,60,237]}
+{"kind":"shape","id":"sh/3yhsrm1g","slide":1,"bbox":[672,204,282,67]}
+{"kind":"textbox","id":"sh/4jq90ri1","slide":1,"text":"/kuavo_arm_traj","textPreview":"/kuavo_arm_traj","textChars":15,"textLines":1,"bbox":[684,211,258,27]}
+{"kind":"textbox","id":"sh/pkjatwjm","slide":1,"text":"JointState.position[14]，单位 degree","textPreview":"JointState.position[14]，单位 degree","textChars":33,"textLines":1,"bbox":[685,240,256,24]}
+{"kind":"shape","id":"sh/mtcba10z","slide":1,"bbox":[672,292,282,88]}
+{"kind":"textbox","id":"sh/nuls361k","slide":1,"text":"humanoidController callback","textPreview":"humanoidController callback","textChars":27,"textLines":1,"bbox":[684,299,258,27]}
+{"kind":"textbox","id":"sh/hk7mp47y","slide":1,"text":"degree 转 rad\n写入 arm_joint_trajectory_","textPreview":"degree 转 rad | 写入 arm_joint_trajectory_","textChars":37,"textLines":2,"bbox":[685,328,256,45]}
+{"kind":"shape","id":"sh/wzylgz6d","slide":1,"bbox":[672,401,282,76]}
+{"kind":"textbox","id":"sh/vyp4nup8","slide":1,"text":"控制循环","textPreview":"控制循环","textChars":4,"textLines":1,"bbox":[684,408,258,27]}
+{"kind":"textbox","id":"sh/uxg3epon","slide":1,"text":"滤波并写入 optimizedState2WBC_mrt_","textPreview":"滤波并写入 optimizedState2WBC_mrt_","textChars":29,"textLines":1,"bbox":[685,437,256,33]}
+{"kind":"shape","id":"sh/9wnml472","slide":1,"bbox":[672,498,282,73]}
+{"kind":"textbox","id":"sh/8velcz6h","slide":1,"text":"WBC update()","textPreview":"WBC update()","textChars":12,"textLines":1,"bbox":[684,505,258,27]}
+{"kind":"textbox","id":"sh/7u54jupw","slide":1,"text":"生成 output_pos_ / output_vel_ / output_tau_","textPreview":"生成 output_pos_ / output_vel_ / output_tau_","textChars":42,"textLines":1,"bbox":[685,534,256,30]}
+{"kind":"shape","id":"sh/mtw3ap8b","slide":1,"bbox":[696,584,234,54]}
+{"kind":"textbox","id":"sh/tsrmxo76","slide":1,"text":"/joint_cmd\nkuavo_msgs/jointCmd","textPreview":"/joint_cmd | kuavo_msgs/jointCmd","textChars":30,"textLines":2,"bbox":[708,591,210,40]}
+{"kind":"shape","id":"sh/sri5oj6l","slide":1,"bbox":[813,271,0,21]}
+{"kind":"shape","id":"sh/cvqp0nex","slide":1,"bbox":[813,380,0,21]}
+{"kind":"shape","id":"sh/dwz6tsfi","slide":1,"bbox":[813,477,0,21]}
+{"kind":"shape","id":"sh/qt8nyxwr","slide":1,"bbox":[813,571,0,13]}
+{"kind":"shape","id":"sh/ruhor2xc","slide":1,"bbox":[606,237.5,66,272.5]}
+{"kind":"shape","id":"sh/4r65wne1","slide":1,"bbox":[1020,220,194,91]}
+{"kind":"textbox","id":"sh/psz6psf6","slide":1,"text":"HardwareNodelet","textPreview":"HardwareNodelet","textChars":15,"textLines":1,"bbox":[1032,227,170,27]}
+{"kind":"textbox","id":"sh/25onudwv","slide":1,"text":"HardwareNodeletCXX\n订阅 /joint_cmd","textPreview":"HardwareNodeletCXX | 订阅 /joint_cmd","textChars":32,"textLines":2,"bbox":[1033,256,168,48]}
+{"kind":"shape","id":"sh/36xonixg","slide":1,"bbox":[1020,350,194,86]}
+{"kind":"textbox","id":"sh/g365s3ep","slide":1,"text":"hardware_plant","textPreview":"hardware_plant","textChars":14,"textLines":1,"bbox":[1032,357,170,27]}
+{"kind":"textbox","id":"sh/h4f6l8fa","slide":1,"text":"HardwarePlant\n硬件抽象与命令下发","textPreview":"HardwarePlant | 硬件抽象与命令下发","textChars":23,"textLines":2,"bbox":[1033,386,168,43]}
+{"kind":"shape","id":"sh/jydovyhw","slide":1,"bbox":[1020,482,194,97]}
+{"kind":"textbox","id":"sh/ix472d0r","slide":1,"text":"真实 Motors","textPreview":"真实 Motors","textChars":9,"textLines":1,"bbox":[1032,489,170,27]}
+{"kind":"textbox","id":"sh/50v6x8z2","slide":1,"text":"PA100 / EtherCAT\nRuiwo actuator","textPreview":"PA100 / EtherCAT | Ruiwo actuator","textChars":31,"textLines":2,"bbox":[1033,518,168,54]}
+{"kind":"shape","id":"sh/kzmp43yh","slide":1,"bbox":[1117,311,0,39]}
+{"kind":"shape","id":"sh/72x8zih8","slide":1,"bbox":[1117,436,0,46]}
+{"kind":"shape","id":"sh/61o76dgn","slide":1,"bbox":[930,265.5,90,345.5]}
+{"kind":"textbox","id":"sh/t4fq1sze","slide":1,"text":"开源边界","textPreview":"开源边界","textChars":4,"textLines":1,"bbox":[1040,600,154,22]}
+{"kind":"textbox","id":"sh/s36p8nyt","slide":1,"text":"硬件内部实现以编译库提供","textPreview":"硬件内部实现以编译库提供","textChars":12,"textLines":1,"bbox":[1018,620,198,20]}
+{"kind":"notes","id":"nt/9r1bsb","slide":1,"text":"源码依据：\n/Users/jiayiwang/TUM/MA/kuavo_learning_studio/kuavo_deploy/kuavo_env/KuavoBaseRosEnv.py\n/Users/jiayiwang/TUM/MA/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/lingbotvla/data/vla_data/utils.py\n/Users/jiayiwang/TUM/MA/kuavo-ros-opensource/src/kuavo_humanoid_sdk/kuavo_humanoid_sdk/kuavo/robot.py\n/Users/jiayiwang/TUM/MA/kuavo-ros-opensource/src/kuavo_humanoid_sdk/kuavo_humanoid_sdk/kuavo/core/core.py\n/Users/jiayiwang/TUM/MA/kuavo-ros-opensource/src/kuavo_humanoid_sdk/kuavo_humanoid_sdk/kuavo/core/ros/control.py\n/Users/jiayiwang/TUM/MA/kuavo-ros-opensource/src/humanoid-control/humanoid_controllers/src/humanoidController.cpp\n/Users/jiayiwang/TUM/MA/kuavo-ros-opensource/src/humanoid-control/humanoid_controllers/launch/load_kuavo_real.launch"}

@@ -58,6 +58,7 @@ from kuavo_deploy.utils.policy_loader import (
     load_native_policy_bundle,
     resolve_eval_output_dir,
 )
+from kuavo_deploy.safety.safety_supervisor import SafetySupervisor
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 
 log_model = setup_logger("model")
@@ -77,6 +78,42 @@ pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_s
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
 stop_flag = threading.Event()
 pause_flag = threading.Event()
+
+
+def read_measured_arm_q(env) -> np.ndarray:
+    """Read and validate the latest measured v49 dual-arm joint positions."""
+    q_measured = np.asarray(
+        env.robot_state.arm_joint_state().position,
+        dtype=np.float64,
+    )
+    if q_measured.shape != (14,):
+        raise RuntimeError(
+            f"Measured arm state must have shape (14,), got {q_measured.shape}"
+        )
+    if not np.isfinite(q_measured).all():
+        raise RuntimeError("Measured arm state contains NaN or Inf")
+    return q_measured
+
+
+def run_arm_safety_hold(env, q_hold: np.ndarray) -> None:
+    """Latch and resend one measured q14 until a manual/process stop."""
+    latched_q_hold = np.asarray(q_hold, dtype=np.float64).copy()
+    if latched_q_hold.shape != (14,):
+        raise RuntimeError(
+            f"Safety HOLD target must have shape (14,), got {latched_q_hold.shape}"
+        )
+    if not np.isfinite(latched_q_hold).all():
+        raise RuntimeError("Safety HOLD target contains NaN or Inf")
+    latched_q_hold.setflags(write=False)
+
+    log_robot.critical("Arm safety HOLD entered; automatic recovery is disabled")
+    log_robot.critical(f"Latched q_hold: {latched_q_hold.tolist()}")
+    try:
+        while not rospy.is_shutdown() and not stop_flag.is_set():
+            env.robot.control_arm_joint_positions(latched_q_hold)
+            env.rate.sleep()
+    finally:
+        log_robot.warning("Arm safety HOLD exited by manual/process stop")
 
 
 def save_rollout_video(output_path: Path, frames: list[np.ndarray], fps: int | float) -> None:
@@ -145,6 +182,13 @@ def main(config: KuavoConfig, env: gym.Env):
     
     task_prompt = getattr(cfg, 'task_prompt', "robot manipulation")
 
+    safety_supervisor = None
+    if cfg.safety_enabled:
+        safety_supervisor = SafetySupervisor(task_name=cfg.safety_task)
+        log_robot.info(
+            f"Action SafetySupervisor enabled with task profile '{cfg.safety_task}'"
+        )
+
     policy, preprocessor, postprocessor, pretrained_model_dir = setup_policy(pretrained_path, policy_type, device, task_prompt=task_prompt)
 
     # Initialize evaluation environment to render two observation types:
@@ -193,6 +237,7 @@ def main(config: KuavoConfig, env: gym.Env):
 
         step = 0
         done = False
+        previous_accepted_q_cmd = None
         with tqdm(total=max_episode_steps, desc=f"Episode {episode+1}", unit="step", leave=False) as pbar:
             while not done:
                 # --- Pause support: block here if pause_flag is set ---
@@ -215,8 +260,50 @@ def main(config: KuavoConfig, env: gym.Env):
                 numpy_action = action.squeeze(0).cpu().numpy()
                 log_model.debug(f"numpy_action: {numpy_action}")
 
+                if safety_supervisor is not None:
+                    q_ref = (
+                        read_measured_arm_q(env)
+                        if previous_accepted_q_cmd is None
+                        else previous_accepted_q_cmd
+                    )
+                    safety_result = safety_supervisor.check(
+                        action=numpy_action,
+                        q_ref=q_ref,
+                    )
+                    if not safety_result.safe:
+                        q_measured_at_failure = read_measured_arm_q(env)
+                        q_hold = q_measured_at_failure.copy()
+                        details = safety_result.details
+                        log_robot.critical(
+                            "Action safety violation: "
+                            f"task={cfg.safety_task}, episode={episode}, step={step}, "
+                            f"reason={safety_result.reason}"
+                        )
+                        log_robot.critical(
+                            "Violation details: "
+                            f"indices={details.get('violating_joint_indices', [])}, "
+                            f"names={details.get('violating_joint_names', [])}, "
+                            f"previous_accepted_q_cmd="
+                            f"{None if previous_accepted_q_cmd is None else previous_accepted_q_cmd.tolist()}, "
+                            f"unsafe_q_cmd="
+                            f"{None if details.get('q_cmd') is None else details['q_cmd'].tolist()}, "
+                            f"q_ref="
+                            f"{None if details.get('q_ref') is None else details['q_ref'].tolist()}, "
+                            f"delta_q="
+                            f"{None if details.get('delta_q') is None else details['delta_q'].tolist()}, "
+                            f"delta_q_limit="
+                            f"{None if details.get('delta_q_limit') is None else details['delta_q_limit'].tolist()}, "
+                            f"raw_action={np.asarray(numpy_action).tolist()}, "
+                            f"q_measured_at_failure={q_measured_at_failure.tolist()}, "
+                            f"q_hold={q_hold.tolist()}"
+                        )
+                        run_arm_safety_hold(env, q_hold)
+                        return
+
                 # 执行动作
                 observation, reward, terminated, truncated, info = env.step(numpy_action)
+                if safety_supervisor is not None:
+                    previous_accepted_q_cmd = safety_result.details["q_cmd"].copy()
                 if policy_type != 'client':
                     observation = inject_task_prompt(observation, task_prompt)
                 observation = preprocessor(observation)
