@@ -51,10 +51,43 @@ APPLE_PICK_DELTA_Q_LIMIT = np.array(
     dtype=np.float64,
 )
 
+
+# Demonstration-derived task-specific joint command continuity limits for
+# bottle_pick. The dataset contains 95 episodes and 13,965 frames sampled at
+# 0.1 s intervals. Each value is the within-episode adjacent-frame 99.9th
+# percentile of abs(delta_q), multiplied by 1.2 and rounded upward to 0.01 rad.
+#
+# These are NOT hardware safety limits, torque limits, velocity limits, or
+# URDF joint limits.
+BOTTLE_PICK_DELTA_Q_LIMIT = np.array(
+    [
+        0.11,  # L1
+        0.04,  # L2
+        0.12,  # L3
+        0.20,  # L4
+        0.19,  # L5
+        0.13,  # L6
+        0.14,  # L7
+        0.08,  # R1
+        0.05,  # R2
+        0.11,  # R3
+        0.25,  # R4
+        0.14,  # R5
+        0.13,  # R6
+        0.12,  # R7
+    ],
+    dtype=np.float64,
+)
+
+
+@dataclass(frozen=True)
+class SafetyProfile:
+    delta_q_limit: np.ndarray
+
+
 SAFETY_PROFILES = {
-    "apple_pick": {
-        "delta_q_limit": APPLE_PICK_DELTA_Q_LIMIT,
-    },
+    "apple_pick": SafetyProfile(delta_q_limit=APPLE_PICK_DELTA_Q_LIMIT),
+    "bottle_pick": SafetyProfile(delta_q_limit=BOTTLE_PICK_DELTA_Q_LIMIT),
 }
 
 
@@ -77,7 +110,7 @@ class SafetySupervisor:
 
         self.task_name = task_name
         self.delta_q_limit = np.asarray(
-            SAFETY_PROFILES[task_name]["delta_q_limit"], dtype=np.float64
+            SAFETY_PROFILES[task_name].delta_q_limit, dtype=np.float64
         ).copy()
         if self.delta_q_limit.shape != (14,):
             raise ValueError(

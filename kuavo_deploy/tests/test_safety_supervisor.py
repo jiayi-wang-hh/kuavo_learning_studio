@@ -4,6 +4,7 @@ import numpy as np
 
 from kuavo_deploy.safety.safety_supervisor import (
     APPLE_PICK_DELTA_Q_LIMIT,
+    BOTTLE_PICK_DELTA_Q_LIMIT,
     SafetySupervisor,
 )
 
@@ -48,6 +49,37 @@ class SafetySupervisorTest(unittest.TestCase):
 
         self.assertTrue(result.safe)
         np.testing.assert_array_equal(result.details["q_cmd"], q_cmd)
+
+    def test_bottle_pick_profile_matches_expected_values(self):
+        np.testing.assert_array_equal(
+            BOTTLE_PICK_DELTA_Q_LIMIT,
+            np.array(
+                [
+                    0.11,
+                    0.04,
+                    0.12,
+                    0.20,
+                    0.19,
+                    0.13,
+                    0.14,
+                    0.08,
+                    0.05,
+                    0.11,
+                    0.25,
+                    0.14,
+                    0.13,
+                    0.12,
+                ],
+                dtype=np.float64,
+            ),
+        )
+
+    def test_bottle_pick_profile_is_selected(self):
+        supervisor = SafetySupervisor(task_name="bottle_pick")
+
+        np.testing.assert_array_equal(
+            supervisor.delta_q_limit, BOTTLE_PICK_DELTA_Q_LIMIT
+        )
 
     def test_value_equal_to_limit_passes(self):
         result = self.supervisor.check(
