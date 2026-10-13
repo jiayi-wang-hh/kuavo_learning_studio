@@ -1,6 +1,6 @@
 dataset:  # 数据集相关设置。
-  repo_id: "lerobot/your_dataset"  # 数据集名字，用来做标识。
-  root: null  # 本地数据路径。
+  repo_id: "kuavo/icra_task1_lerobot_jiayi"  # 数据集名字，用来做标识。
+  root: "/root/bayes-tmp/kuavo_dataset/icra_task1_lerobot_jiayi/lerobot_v3.0"  # 本地数据路径。
   episodes: null  # 只训练指定的 episode；不填就是全量。
   image_transforms: {}  # 额外的图像预处理设置。
   revision: null  # 远程数据集版本；本地训练一般不用改。
@@ -16,15 +16,15 @@ training:  # 训练流程设置。
   seed: 1000  # 随机种子。
   cudnn_deterministic: false  # 更稳定可复现，但会慢一点。
   num_workers: 4  # 读数据用的进程数。
-  batch_size: 8  # 每张卡上的 batch size。
+  batch_size: 32  # 每张卡上的 batch size。
   prefetch_factor: 4  # 每个读数据进程提前准备多少个 batch。
   persistent_workers: true  # 是否让读数据进程常驻。
-  steps: 10000  # 总训练步数。
+  steps: 100000  # 总训练步数。
   eval_freq: 1000  # 每隔多少步做一次评测。
   log_freq: 100  # 每隔多少步打一次日志。
   tolerance_s: 1.0e-4  # 视频帧和标注对齐时允许的时间误差。
   save_checkpoint: true  # 是否保存 checkpoint。
-  save_freq: 1000  # 每隔多少步存一次权重。
+  save_freq: 10000  # 每隔多少步存一次权重。
   use_policy_training_preset: true  # 是否用模型自带的优化器和调度器默认值。
   optimizer: null  # 手动指定优化器；一般留空。
   scheduler: null  # 手动指定学习率策略；一般留空。
@@ -82,9 +82,10 @@ policy:  # 模型相关设置。
   tune_visual: false  # 是否训练视觉部分。
   tune_projector: true  # 是否训练 projector。
   tune_diffusion_model: true  # 是否训练动作头。
-  lora_alpha: 16  # LoRA alpha。
+  lora_rank: 64
+  lora_alpha: 12  # LoRA alpha。
   lora_dropout: 0.1  # LoRA dropout。
-  lora_full_model: false  # 是否全模型加 LoRA。
+  lora_full_model: true  # 是否全模型加 LoRA。
   optimizer_lr: 1.0e-4  # 主学习率。
   optimizer_betas: [0.95, 0.999]  # 优化器 beta 参数。
   optimizer_eps: 1.0e-8  # 优化器 epsilon。

@@ -1,0 +1,28 @@
+{
+  "model_path": "/root/bayes-tmp/jiayi/kuavo_learning_studio/outputs/train/gr00t_20260704_032420/checkpoints/050000/pretrained_model",
+  "dataset_root": "/root/bayes-tmp/kuavo_dataset/icra_task1_lerobot_jiayi/lerobot_v3.0",
+  "action_horizon": 16,
+  "video_decode_count": 30,
+  "episodes": {
+    "0": {
+      "steps": 153,
+      "mse": 0.0011438037035986781,
+      "mae": 0.016382554545998573
+    },
+    "1": {
+      "steps": 152,
+      "mse": 0.001920564565807581,
+      "mae": 0.020032299682497978
+    },
+    "2": {
+      "steps": 147,
+      "mse": 0.001095127547159791,
+      "mae": 0.017516084015369415
+    }
+  },
+  "overall": {
+    "steps": 452,
+    "mse": 0.001389184850268066,
+    "mae": 0.017978550866246223
+  }
+}

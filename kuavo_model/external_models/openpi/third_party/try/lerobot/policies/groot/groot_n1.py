@@ -45,6 +45,7 @@ from lerobot.policies.groot.action_head.flow_matching_action_head import (
     FlowmatchingActionHead,
     FlowmatchingActionHeadConfig,
 )
+from lerobot.policies.groot.lora import freeze_non_lora_parameters, inject_lora_adapter
 from lerobot.policies.groot.utils import ensure_eagle_cache_ready
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
@@ -346,12 +347,40 @@ class GR00TN15(PreTrainedModel):
         tune_llm = kwargs.pop("tune_llm", False)
         tune_projector = kwargs.pop("tune_projector", True)
         tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
+        lora_rank = kwargs.pop("lora_rank", 0)
+        lora_alpha = kwargs.pop("lora_alpha", 16)
+        lora_dropout = kwargs.pop("lora_dropout", 0.1)
+        lora_full_model = kwargs.pop("lora_full_model", False)
+        lora_vision_target_modules = kwargs.pop(
+            "lora_vision_target_modules",
+            (
+                "self_attn.q_proj",
+                "self_attn.k_proj",
+                "self_attn.v_proj",
+                "self_attn.out_proj",
+                "mlp.fc1",
+                "mlp.fc2",
+            ),
+        )
+        lora_vlm_target_modules = kwargs.pop(
+            "lora_vlm_target_modules",
+            ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"),
+        )
+        lora_action_expert_target_modules = kwargs.pop(
+            "lora_action_expert_target_modules",
+            ("to_q", "to_k", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"),
+        )
 
         print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
         print(f"Tune backbone vision tower: {tune_visual}")
         print(f"Tune backbone LLM: {tune_llm}")
         print(f"Tune action head projector: {tune_projector}")
         print(f"Tune action head DiT: {tune_diffusion_model}")
+        print(f"LoRA rank: {lora_rank}")
+        if lora_rank > 0:
+            print(f"LoRA alpha: {lora_alpha}")
+            print(f"LoRA dropout: {lora_dropout}")
+            print(f"LoRA full model: {lora_full_model}")
 
         # get the current model path being downloaded
         try:
@@ -379,4 +408,63 @@ class GR00TN15(PreTrainedModel):
         pretrained_model.action_head.set_trainable_parameters(
             tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
         )
+        pretrained_model._maybe_setup_lora(
+            rank=lora_rank,
+            alpha=lora_alpha,
+            dropout=lora_dropout,
+            full_model=lora_full_model,
+            vision_target_modules=lora_vision_target_modules,
+            vlm_target_modules=lora_vlm_target_modules,
+            action_expert_target_modules=lora_action_expert_target_modules,
+        )
         return pretrained_model
+
+    def _maybe_setup_lora(
+        self,
+        rank: int,
+        alpha: int,
+        dropout: float,
+        full_model: bool,
+        vision_target_modules: tuple[str, ...],
+        vlm_target_modules: tuple[str, ...],
+        action_expert_target_modules: tuple[str, ...],
+    ) -> None:
+        """Inject source-compatible LoRA adapters after base checkpoint loading."""
+        if rank <= 0:
+            return
+
+        if full_model:
+            self.backbone.eagle_model.vision_model = inject_lora_adapter(
+                module=self.backbone.eagle_model.vision_model,
+                target_modules=vision_target_modules,
+                rank=rank,
+                alpha=alpha,
+                dropout=dropout,
+                adapter_name="vision",
+            )
+            self.backbone.eagle_model.language_model = inject_lora_adapter(
+                module=self.backbone.eagle_model.language_model,
+                target_modules=vlm_target_modules,
+                rank=rank,
+                alpha=alpha,
+                dropout=dropout,
+                adapter_name="llm",
+            )
+
+        self.action_head.model = inject_lora_adapter(
+            module=self.action_head.model,
+            target_modules=action_expert_target_modules,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            adapter_name="action_expert",
+        )
+
+        freeze_non_lora_parameters(self)
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        print(
+            "LoRA-only training enabled: "
+            f"trainable parameters: {trainable_params:,} / {total_params:,} "
+            f"({100 * trainable_params / total_params:.2f}%)"
+        )
