@@ -51,6 +51,18 @@ class FinetuneConfig:
     tune_visual: bool = False
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
+    use_visual_lora: bool = False
+    """If True, freeze the base visual encoder and train LoRA adapters in its attention layers."""
+
+    visual_lora_rank: int = 8
+    """Rank of the visual-encoder LoRA adapters."""
+
+    visual_lora_alpha: int = 16
+    """Scaling alpha of the visual-encoder LoRA adapters."""
+
+    visual_lora_dropout: float = 0.05
+    """Dropout probability used by the visual-encoder LoRA adapters."""
+
     tune_projector: bool = True
     """If True, fine-tune the multimodal projector layers that map vision/language features to a shared space."""
 
@@ -122,6 +134,12 @@ class FinetuneConfig:
 
     gradient_accumulation_steps: int = 1
     """Number of forward passes to accumulate before performing a backward/update step."""
+
+    gradient_checkpointing: bool = False
+    """If True, recompute transformer activations during backward to reduce VRAM usage."""
+
+    load_bf16: bool = False
+    """If True, load the frozen Qwen3-VL backbone in BF16 to reduce VRAM usage."""
 
     output_dir: str = "./outputs"
     """Directory where model checkpoints, logs, and outputs are saved."""

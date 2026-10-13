@@ -103,9 +103,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
-        self.use_diffusion_lora = config.use_diffusion_lora
+        self.use_diffusion_lora = False
+        if config.use_diffusion_lora:
+            self.enable_diffusion_lora()
+
+    def enable_diffusion_lora(self) -> None:
+        """Inject diffusion LoRA, including when called after checkpoint loading."""
         if self.use_diffusion_lora:
-            self._add_diffusion_lora()
+            return
+        self._add_diffusion_lora()
+        self.use_diffusion_lora = True
 
     def _add_diffusion_lora(self) -> None:
         """Freeze the base DiT and inject trainable LoRA adapters into its attention layers."""
@@ -270,22 +277,22 @@ class Gr00tN1d7ActionHead(nn.Module):
         if self.config.use_alternate_vl_dit:
             image_mask = backbone_output.image_mask
             backbone_attention_mask = backbone_output.backbone_attention_mask
-            model_output, _ = self.model(
+            model_output = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
                 timestep=t_discretized,
-                return_all_hidden_states=True,
+                return_all_hidden_states=False,
                 image_mask=image_mask,
                 backbone_attention_mask=backbone_attention_mask,
             )
         else:
-            model_output, _ = self.model(
+            model_output = self.model(
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
                 timestep=t_discretized,
-                return_all_hidden_states=True,
+                return_all_hidden_states=False,
             )
 
         pred = self.action_decoder(model_output, embodiment_id)
@@ -550,6 +557,11 @@ class Gr00tN1d7(PreTrainedModel):
             model_name=config.model_name,
             tune_llm=config.tune_llm,
             tune_visual=config.tune_visual,
+            use_visual_lora=config.use_visual_lora,
+            visual_lora_rank=config.visual_lora_rank,
+            visual_lora_alpha=config.visual_lora_alpha,
+            visual_lora_dropout=config.visual_lora_dropout,
+            visual_lora_target_modules=config.visual_lora_target_modules,
             select_layer=config.select_layer,
             reproject_vision=config.reproject_vision,
             use_flash_attention=config.use_flash_attention,

@@ -17,7 +17,6 @@
 # This script tries to provide a similar user experience as current OSS.
 
 import json
-import os
 from pathlib import Path
 
 import tyro
@@ -25,8 +24,6 @@ import tyro
 from gr00t.configs.base_config import get_default_config
 from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.experiment.experiment import run
-
-from loguru import logger
 
 
 # Make sure the user provided modality config is registered.
@@ -44,24 +41,9 @@ def load_modality_config(modality_config_path: str):
 
 
 if __name__ == "__main__":
-    # Set LOGURU_LEVEL environment variable if not already set (default: INFO)
-    if "LOGURU_LEVEL" not in os.environ:
-        os.environ["LOGURU_LEVEL"] = "INFO"
     # Use tyro for clean CLI
     ft_config = tyro.cli(FinetuneConfig, description=__doc__)
 
-    output_dir = Path(ft_config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.add(
-        output_dir / "train.log",
-        level="INFO",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{line} | {message}",
-        rotation="100 MB",
-        retention=5,
-        enqueue=True,
-    )
-    
     from gr00t.data.embodiment_tags import EmbodimentTag
 
     ft_config.embodiment_tag = EmbodimentTag.resolve(ft_config.embodiment_tag)
@@ -90,6 +72,10 @@ if __name__ == "__main__":
     # overwrite with finetune config supplied by the user
     config.model.tune_llm = ft_config.tune_llm
     config.model.tune_visual = ft_config.tune_visual
+    config.model.use_visual_lora = ft_config.use_visual_lora
+    config.model.visual_lora_rank = ft_config.visual_lora_rank
+    config.model.visual_lora_alpha = ft_config.visual_lora_alpha
+    config.model.visual_lora_dropout = ft_config.visual_lora_dropout
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
     config.model.use_diffusion_lora = ft_config.use_diffusion_lora
@@ -104,7 +90,7 @@ if __name__ == "__main__":
     else:
         config.model.extra_augmentation_config = None
 
-    config.model.load_bf16 = False
+    config.model.load_bf16 = ft_config.load_bf16
     config.model.reproject_vision = False
     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
@@ -117,6 +103,7 @@ if __name__ == "__main__":
     config.training.dataloader_num_workers = ft_config.dataloader_num_workers
     config.training.learning_rate = ft_config.learning_rate
     config.training.gradient_accumulation_steps = ft_config.gradient_accumulation_steps
+    config.training.gradient_checkpointing = ft_config.gradient_checkpointing
     config.training.output_dir = ft_config.output_dir
     config.training.save_steps = ft_config.save_steps
     config.training.save_total_limit = ft_config.save_total_limit

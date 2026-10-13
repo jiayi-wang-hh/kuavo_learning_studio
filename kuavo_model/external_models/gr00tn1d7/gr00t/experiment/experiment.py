@@ -36,12 +36,19 @@ from gr00t.model import MODEL_REGISTRY
 from gr00t.utils.initial_actions import INITIAL_ACTIONS_FILENAME, save_initial_actions
 
 
-def setup_logging(debug: bool = False):
-    """Configure logging."""
+def setup_logging(debug: bool = False, log_file: Path | None = None):
+    """Configure console logging and optionally persist it to a file."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, mode="a", encoding="utf-8"))
+
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
+        handlers=handlers,
+        force=True,
     )
     # Reduce verbosity of some libraries
     logging.getLogger("transformers").setLevel(logging.WARNING)
@@ -130,24 +137,24 @@ def run(config: Config):
         local_rank = 0
         global_rank = 0
 
-    # Setup
-    setup_logging()
-    if global_rank != 0:
-        logging.getLogger().setLevel(logging.WARNING)
-    set_seed(config.data.seed)
-
-    # Validate config
-    config.validate()
-
-    # Create output directory
+    # Resolve the output directory before configuring logging so train.log is
+    # created in the same directory as checkpoints and experiment artifacts.
     if config.training.experiment_name is None:
         output_dir = Path(config.training.output_dir)
         experiment_name = output_dir.name
     else:
         output_dir = Path(config.training.output_dir) / config.training.experiment_name
         experiment_name = config.training.experiment_name
-
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Only rank zero writes the shared log file in distributed training.
+    setup_logging(log_file=output_dir / "train.log" if global_rank == 0 else None)
+    if global_rank != 0:
+        logging.getLogger().setLevel(logging.WARNING)
+    set_seed(config.data.seed)
+
+    # Validate config
+    config.validate()
 
     # Save config
     save_cfg_dir = output_dir / "experiment_cfg"

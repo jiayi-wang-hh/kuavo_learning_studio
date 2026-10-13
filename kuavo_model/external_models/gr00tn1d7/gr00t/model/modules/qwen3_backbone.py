@@ -36,6 +36,11 @@ class Qwen3Backbone(torch.nn.Module):
         model_name: str = "nvidia/Cosmos-Reason2-2B",
         tune_llm: bool = False,
         tune_visual: bool = False,
+        use_visual_lora: bool = False,
+        visual_lora_rank: int = 8,
+        visual_lora_alpha: int = 16,
+        visual_lora_dropout: float = 0.05,
+        visual_lora_target_modules: tuple[str, ...] = ("qkv", "proj"),
         select_layer: int = -1,
         reproject_vision: bool = True,
         use_flash_attention: bool = False,
@@ -51,6 +56,7 @@ class Qwen3Backbone(torch.nn.Module):
             model_name: nvidia/Cosmos-Reason2-2B
             tune_llm: whether to tune the LLM model (default: False)
             tune_visual: whether to tune the visual model (default: False)
+            use_visual_lora: whether to tune visual attention through LoRA adapters
         """
         if not _QWEN3VL_AVAILABLE:
             raise ImportError(
@@ -89,12 +95,83 @@ class Qwen3Backbone(torch.nn.Module):
 
         self.select_layer = select_layer
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
+        self.use_visual_lora = False
+        if use_visual_lora:
+            self.enable_visual_lora(
+                rank=visual_lora_rank,
+                alpha=visual_lora_alpha,
+                dropout=visual_lora_dropout,
+                target_modules=visual_lora_target_modules,
+            )
         if load_bf16 and trainable_params_fp32:
             # cast trainable parameters to fp32
             for n, p in self.named_parameters():
                 if p.requires_grad:
                     p.data = p.data.to(torch.float32)
                     logger.debug(f"Casting trainable parameter {n} to fp32")
+
+    def enable_visual_lora(
+        self,
+        rank: int,
+        alpha: int,
+        dropout: float,
+        target_modules: tuple[str, ...],
+    ) -> None:
+        """Inject visual LoRA, including when called after checkpoint loading."""
+        if self.use_visual_lora:
+            return
+        self._add_visual_lora(rank, alpha, dropout, target_modules)
+        self.use_visual_lora = True
+
+    def _add_visual_lora(
+        self,
+        rank: int,
+        alpha: int,
+        dropout: float,
+        target_modules: tuple[str, ...],
+    ) -> None:
+        """Freeze the visual encoder and inject LoRA into its attention projections."""
+        if self.tune_visual:
+            raise ValueError(
+                "use_visual_lora=True requires tune_visual=False; "
+                "pass --no-tune-visual when enabling visual LoRA."
+            )
+
+        from peft import LoraConfig, inject_adapter_in_model
+
+        attention_targets = [
+            name
+            for name, _ in self.model.visual.named_modules()
+            if any(
+                name == f"attn.{target}" or name.endswith(f".attn.{target}")
+                for target in target_modules
+            )
+        ]
+        if not attention_targets:
+            raise ValueError(
+                "None of the requested visual LoRA targets were found in visual attention: "
+                f"{target_modules}."
+            )
+
+        lora_config = LoraConfig(
+            r=rank,
+            lora_alpha=alpha,
+            lora_dropout=dropout,
+            target_modules=attention_targets,
+            bias="none",
+        )
+        visual_model = inject_adapter_in_model(lora_config, self.model.visual)
+
+        trainable_lora = [
+            name
+            for name, parameter in visual_model.named_parameters()
+            if parameter.requires_grad and "lora_" in name
+        ]
+        if not trainable_lora:
+            raise RuntimeError(
+                "Visual LoRA was enabled, but no trainable LoRA parameters were injected."
+            )
+        logger.info("Injected visual LoRA into %d parameters", len(trainable_lora))
 
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_top_llm_layers: int):
         self.tune_llm = tune_llm
@@ -129,7 +206,7 @@ class Qwen3Backbone(torch.nn.Module):
         if self.training:
             if self.model.language_model and not self.tune_llm:
                 self.model.language_model.eval()
-            if self.model.visual and not self.tune_visual:
+            if self.model.visual and not self.tune_visual and not self.use_visual_lora:
                 self.model.visual.eval()
 
     def prepare_input(self, batch: dict) -> BatchFeature:

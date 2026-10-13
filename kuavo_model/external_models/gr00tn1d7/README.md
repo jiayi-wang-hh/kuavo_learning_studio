@@ -409,6 +409,12 @@ uv run torchrun --nproc_per_node=8 --master_port=29500 \
 
 Replace `demo_data/cube_to_bowl_5` and `examples/SO100/so100_config.py` with your own dataset and modality config. See [`examples/SO100`](examples/SO100/README.md) for a complete walkthrough.
 
+To fine-tune only low-rank adapters in the Qwen3-VL visual attention layers, add
+`--use-visual-lora --no-tune-visual`. The defaults use rank 8, alpha 16, and
+dropout 0.05; override them with `--visual-lora-rank`, `--visual-lora-alpha`,
+and `--visual-lora-dropout`. Visual LoRA and full visual fine-tuning are mutually
+exclusive.
+
 > **Note:** Use `uv run torchrun` (not bare `torchrun`) to ensure the correct virtual environment is used. Add `--use-wandb` to enable Weights & Biases logging. For more extensive configuration, use `gr00t/experiment/launch_train.py`.
 
 ### Training Tips
