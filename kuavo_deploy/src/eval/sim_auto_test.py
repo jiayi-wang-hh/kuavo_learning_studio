@@ -62,6 +62,7 @@ from kuavo_deploy.utils.policy_loader import (
     load_native_policy_bundle,
     resolve_eval_output_dir,
 )
+from kuavo_deploy.safety.safety_supervisor import SafetySupervisor
 log_model = setup_logger("model")
 log_robot = setup_logger("robot")
 
@@ -98,6 +99,24 @@ def env_success_callback(msg):
 
 pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_size=10)
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
+stop_pub = rospy.Publisher('/kuavo/stop_state', Bool, queue_size=1)
+
+
+def request_execution_stop() -> None:
+    """Trigger the same deploy execution-stop state used by SIGUSR2."""
+    stop_flag.set()
+    stop_pub.publish(Bool(data=True))
+
+
+def read_observed_arm_q(observation) -> np.ndarray:
+    """Extract measured q14 from a raw both-arm observation.state."""
+    state = observation["observation.state"]
+    if torch.is_tensor(state):
+        state = state.detach().cpu().numpy()
+    state = np.asarray(state, dtype=np.float64)
+    if state.shape == (1, 16):
+        state = state[0]
+    return SafetySupervisor.parse_action(state)
 
 
 def save_rollout_video(output_path: Path, frames: list[np.ndarray], fps: int | float) -> None:
@@ -177,6 +196,12 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
     cfg = config.inference
     seed = cfg.seed
     task_prompt = cfg.task_prompt
+    safety_supervisor = None
+    if cfg.safety_enabled:
+        safety_supervisor = SafetySupervisor(task_name=cfg.safety_task)
+        log_robot.info(
+            f"Action SafetySupervisor enabled with task profile '{cfg.safety_task}'"
+        )
     # Initialize environment
     env = gym.make(
         config.env.env_name,
@@ -237,6 +262,7 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
             return 0
         
         start_time = time.time()
+        q_ref = read_observed_arm_q(observation) if safety_supervisor is not None else None
         if cfg.policy_type != "client":
             observation = inject_task_prompt(observation, task_prompt)
         observation = preprocessor(observation)
@@ -250,6 +276,35 @@ def run_single_episode(config, policy, preprocessor, postprocessor, episode, out
         average_action_infer_time += action_infer_time - start_time
 
         numpy_action = action.squeeze(0).cpu().numpy()
+
+        if safety_supervisor is not None:
+            safety_result = safety_supervisor.check(
+                action=numpy_action,
+                q_ref=q_ref,
+            )
+            if not safety_result.safe:
+                details = safety_result.details
+                log_robot.critical(
+                    "Action safety violation: "
+                    f"task={cfg.safety_task}, episode={episode}, step={step}, "
+                    f"reason={safety_result.reason}"
+                )
+                log_robot.critical(
+                    "Violation details: "
+                    f"indices={details.get('violating_joint_indices', [])}, "
+                    f"names={details.get('violating_joint_names', [])}, "
+                    f"unsafe_q_cmd="
+                    f"{None if details.get('q_cmd') is None else details['q_cmd'].tolist()}, "
+                    f"q_ref="
+                    f"{None if details.get('q_ref') is None else details['q_ref'].tolist()}, "
+                    f"delta_q="
+                    f"{None if details.get('delta_q') is None else details['delta_q'].tolist()}, "
+                    f"delta_q_limit="
+                    f"{None if details.get('delta_q_limit') is None else details['delta_q_limit'].tolist()}, "
+                    f"raw_action={np.asarray(numpy_action).tolist()}"
+                )
+                request_execution_stop()
+                return 0
 
         log_model.info(f"Step {step}: Executing action {numpy_action}")
         observation, reward, terminated, truncated, info = env.step(numpy_action)

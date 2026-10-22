@@ -1,4 +1,4 @@
-"""Task-specific action continuity checks for real-robot inference."""
+"""Task-specific action continuity checks for robot inference."""
 
 from dataclasses import dataclass
 from typing import Any

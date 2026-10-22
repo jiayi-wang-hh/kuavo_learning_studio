@@ -76,6 +76,7 @@ def stop_callback(msg):
 
 pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_size=10)
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
+stop_pub = rospy.Publisher('/kuavo/stop_state', Bool, queue_size=1)
 stop_flag = threading.Event()
 pause_flag = threading.Event()
 
@@ -95,25 +96,10 @@ def read_measured_arm_q(env) -> np.ndarray:
     return q_measured
 
 
-def run_arm_safety_hold(env, q_hold: np.ndarray) -> None:
-    """Latch and resend one measured q14 until a manual/process stop."""
-    latched_q_hold = np.asarray(q_hold, dtype=np.float64).copy()
-    if latched_q_hold.shape != (14,):
-        raise RuntimeError(
-            f"Safety HOLD target must have shape (14,), got {latched_q_hold.shape}"
-        )
-    if not np.isfinite(latched_q_hold).all():
-        raise RuntimeError("Safety HOLD target contains NaN or Inf")
-    latched_q_hold.setflags(write=False)
-
-    log_robot.critical("Arm safety HOLD entered; automatic recovery is disabled")
-    log_robot.critical(f"Latched q_hold: {latched_q_hold.tolist()}")
-    try:
-        while not rospy.is_shutdown() and not stop_flag.is_set():
-            env.robot.control_arm_joint_positions(latched_q_hold)
-            env.rate.sleep()
-    finally:
-        log_robot.warning("Arm safety HOLD exited by manual/process stop")
+def request_execution_stop() -> None:
+    """Trigger the same deploy execution-stop state used by SIGUSR2."""
+    stop_flag.set()
+    stop_pub.publish(Bool(data=True))
 
 
 def save_rollout_video(output_path: Path, frames: list[np.ndarray], fps: int | float) -> None:
@@ -237,7 +223,6 @@ def main(config: KuavoConfig, env: gym.Env):
 
         step = 0
         done = False
-        previous_accepted_q_cmd = None
         with tqdm(total=max_episode_steps, desc=f"Episode {episode+1}", unit="step", leave=False) as pbar:
             while not done:
                 # --- Pause support: block here if pause_flag is set ---
@@ -249,6 +234,7 @@ def main(config: KuavoConfig, env: gym.Env):
                     return
                 
                 start_time = time.time()
+                q_ref = read_measured_arm_q(env) if safety_supervisor is not None else None
                 
                 with torch.inference_mode():
                     action = policy.select_action(observation)
@@ -261,18 +247,11 @@ def main(config: KuavoConfig, env: gym.Env):
                 log_model.debug(f"numpy_action: {numpy_action}")
 
                 if safety_supervisor is not None:
-                    q_ref = (
-                        read_measured_arm_q(env)
-                        if previous_accepted_q_cmd is None
-                        else previous_accepted_q_cmd
-                    )
                     safety_result = safety_supervisor.check(
                         action=numpy_action,
                         q_ref=q_ref,
                     )
                     if not safety_result.safe:
-                        q_measured_at_failure = read_measured_arm_q(env)
-                        q_hold = q_measured_at_failure.copy()
                         details = safety_result.details
                         log_robot.critical(
                             "Action safety violation: "
@@ -283,8 +262,6 @@ def main(config: KuavoConfig, env: gym.Env):
                             "Violation details: "
                             f"indices={details.get('violating_joint_indices', [])}, "
                             f"names={details.get('violating_joint_names', [])}, "
-                            f"previous_accepted_q_cmd="
-                            f"{None if previous_accepted_q_cmd is None else previous_accepted_q_cmd.tolist()}, "
                             f"unsafe_q_cmd="
                             f"{None if details.get('q_cmd') is None else details['q_cmd'].tolist()}, "
                             f"q_ref="
@@ -293,17 +270,13 @@ def main(config: KuavoConfig, env: gym.Env):
                             f"{None if details.get('delta_q') is None else details['delta_q'].tolist()}, "
                             f"delta_q_limit="
                             f"{None if details.get('delta_q_limit') is None else details['delta_q_limit'].tolist()}, "
-                            f"raw_action={np.asarray(numpy_action).tolist()}, "
-                            f"q_measured_at_failure={q_measured_at_failure.tolist()}, "
-                            f"q_hold={q_hold.tolist()}"
+                            f"raw_action={np.asarray(numpy_action).tolist()}"
                         )
-                        run_arm_safety_hold(env, q_hold)
+                        request_execution_stop()
                         return
 
                 # 执行动作
                 observation, reward, terminated, truncated, info = env.step(numpy_action)
-                if safety_supervisor is not None:
-                    previous_accepted_q_cmd = safety_result.details["q_cmd"].copy()
                 if policy_type != 'client':
                     observation = inject_task_prompt(observation, task_prompt)
                 observation = preprocessor(observation)
