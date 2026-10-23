@@ -58,6 +58,7 @@ from kuavo_deploy.utils.policy_loader import (
     load_native_policy_bundle,
     resolve_eval_output_dir,
 )
+from kuavo_deploy.safety.safety_supervisor import SafetySupervisor
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 
 log_model = setup_logger("model")
@@ -75,8 +76,30 @@ def stop_callback(msg):
 
 pause_sub = rospy.Subscriber('/kuavo/pause_state', Bool, pause_callback, queue_size=10)
 stop_sub = rospy.Subscriber('/kuavo/stop_state', Bool, stop_callback, queue_size=10)
+stop_pub = rospy.Publisher('/kuavo/stop_state', Bool, queue_size=1)
 stop_flag = threading.Event()
 pause_flag = threading.Event()
+
+
+def read_measured_arm_q(env) -> np.ndarray:
+    """Read and validate the latest measured v49 dual-arm joint positions."""
+    q_measured = np.asarray(
+        env.robot_state.arm_joint_state().position,
+        dtype=np.float64,
+    )
+    if q_measured.shape != (14,):
+        raise RuntimeError(
+            f"Measured arm state must have shape (14,), got {q_measured.shape}"
+        )
+    if not np.isfinite(q_measured).all():
+        raise RuntimeError("Measured arm state contains NaN or Inf")
+    return q_measured
+
+
+def request_execution_stop() -> None:
+    """Trigger the same deploy execution-stop state used by SIGUSR2."""
+    stop_flag.set()
+    stop_pub.publish(Bool(data=True))
 
 
 def save_rollout_video(output_path: Path, frames: list[np.ndarray], fps: int | float) -> None:
@@ -145,6 +168,13 @@ def main(config: KuavoConfig, env: gym.Env):
     
     task_prompt = getattr(cfg, 'task_prompt', "robot manipulation")
 
+    safety_supervisor = None
+    if cfg.safety_enabled:
+        safety_supervisor = SafetySupervisor(task_name=cfg.safety_task)
+        log_robot.info(
+            f"Action SafetySupervisor enabled with task profile '{cfg.safety_task}'"
+        )
+
     policy, preprocessor, postprocessor, pretrained_model_dir = setup_policy(pretrained_path, policy_type, device, task_prompt=task_prompt)
 
     # Initialize evaluation environment to render two observation types:
@@ -204,6 +234,7 @@ def main(config: KuavoConfig, env: gym.Env):
                     return
                 
                 start_time = time.time()
+                q_ref = read_measured_arm_q(env) if safety_supervisor is not None else None
                 
                 with torch.inference_mode():
                     action = policy.select_action(observation)
@@ -214,6 +245,35 @@ def main(config: KuavoConfig, env: gym.Env):
 
                 numpy_action = action.squeeze(0).cpu().numpy()
                 log_model.debug(f"numpy_action: {numpy_action}")
+
+                if safety_supervisor is not None:
+                    safety_result = safety_supervisor.check(
+                        action=numpy_action,
+                        q_ref=q_ref,
+                    )
+                    if not safety_result.safe:
+                        details = safety_result.details
+                        log_robot.critical(
+                            "Action safety violation: "
+                            f"task={cfg.safety_task}, episode={episode}, step={step}, "
+                            f"reason={safety_result.reason}"
+                        )
+                        log_robot.critical(
+                            "Violation details: "
+                            f"indices={details.get('violating_joint_indices', [])}, "
+                            f"names={details.get('violating_joint_names', [])}, "
+                            f"unsafe_q_cmd="
+                            f"{None if details.get('q_cmd') is None else details['q_cmd'].tolist()}, "
+                            f"q_ref="
+                            f"{None if details.get('q_ref') is None else details['q_ref'].tolist()}, "
+                            f"delta_q="
+                            f"{None if details.get('delta_q') is None else details['delta_q'].tolist()}, "
+                            f"delta_q_limit="
+                            f"{None if details.get('delta_q_limit') is None else details['delta_q_limit'].tolist()}, "
+                            f"raw_action={np.asarray(numpy_action).tolist()}"
+                        )
+                        request_execution_stop()
+                        return
 
                 # 执行动作
                 observation, reward, terminated, truncated, info = env.step(numpy_action)

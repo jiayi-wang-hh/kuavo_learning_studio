@@ -195,12 +195,21 @@ class ConfigInference:
     max_episode_steps: int = 1000
     task_prompt: str = ""
 
+    safety_enabled: bool = False
+    safety_task: str = ""
+
     async_inference: bool = False
     async_control_hz: float = 0.0
     async_buffer_size: int = 32
     async_low_watermark: int = 4
     async_warmup_actions: int = 1
     async_action_timeout: float = 1.0
+
+    # Existing deploy.yaml compatibility; RTC behavior is implemented elsewhere.
+    rtc_lite_enabled: bool = False
+    rtc_full_enabled: bool = False
+    rtc_full_mode: str = "vjp"
+
     def validate(self):
         supported_policy_types = [
             "",

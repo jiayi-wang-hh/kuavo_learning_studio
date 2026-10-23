@@ -12,6 +12,8 @@ env:  # 推理环境设置
   
 
 inference:  # 推理和评测设置
+  safety_enabled: true
+  safety_task: "apple_pick" # "bottle_pick", "apple_pick"
   go_bag_path: /home/kuavo/yuanmeng/start_bag/startbag_bottlepick_clipped.bag # 推理时使用的rosbag路径
   policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
   pretrained_path: /path/to/checkpoint # 要加载的权重路径。

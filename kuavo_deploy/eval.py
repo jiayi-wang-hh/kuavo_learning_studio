@@ -286,8 +286,8 @@ def main():
     #     print("无效选择")
     #     return
 
-    # config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml").strip()
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
+    config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml--------->").strip()
+    # config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
     if not Path(config_path).exists():
         print(f"❌ 配置文件不存在: {config_path}")
         sys.exit(1)
