@@ -1,0 +1,58 @@
+skills:
+  - skill_id: normal_sort
+    skill_type: vla_policy
+    description: >-
+      Complete bimanual package sorting. The left arm picks packages from the conveyor and places them on the yellow sorting platform. The right arm flips packages if needed and transfers them into the basket.
+    checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora
+    checkpoint_selector: global_step_66480/hf_ckpt
+    checkpoint_root: null
+    exported_hf_checkpoint: null
+    base_model: /media/data/jiayi/hf_model/lingbot-vla-4b
+    model_repo_root: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla
+    tokenizer: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct
+    training_config: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt/lingbotvla_cli.yaml
+    robot_config: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/configs/robot_configs/kuavo.yaml
+    norm_stats: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_package.json
+    task_instruction: Sort all six packages from the conveyor. The left arm places each on the yellow sorting platform; the right arm flips packages as needed and places them in the basket. Continue until all six are sorted.
+    expected_preconditions:
+      - Normal task station and basket are in the trained layout.
+      - No misplaced package obstructs the sorting platform.
+      - Robot safety state is valid and both arms are in an approved start state.
+    expected_postconditions:
+      - All six packages are in the basket.
+      - Sorting platform and workspace are clear.
+    supported_scenarios:
+      - Packages are in normal conveyor/sorting positions and full-task execution may continue.
+    execution_timeout: 300
+    execution_horizon: 25
+    execution_status: idle
+
+  - skill_id: recover_package
+    skill_type: vla_policy
+    description: >-
+      Recover a misplaced package from the robot-body side of the yellow sorting platform. The left arm grasps the misplaced package and returns it to the platform.
+    checkpoint: null
+    checkpoint_root: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints
+    checkpoint_selector: global_step_28300
+    exported_hf_checkpoint: null
+    base_model: /media/data/jiayi/hf_model/lingbot-vla-4b
+    model_repo_root: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla
+    tokenizer: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct
+    training_config: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/lingbotvla_cli.yaml
+    robot_config: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/configs/robot_configs/kuavo.yaml
+    norm_stats: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/task3_package_failure/task3_package_below_target_zone.json
+    task_instruction: The package has slipped toward the robot-body side of the yellow sorting platform. Use the left arm to grasp that package and return it fully onto the yellow platform, then release it.
+    expected_preconditions:
+      - A package is currently localized in the trained body-side recovery region.
+      - The normal policy is stopped and its pending action chunk has been cancelled.
+      - Left arm, gripper, collision, and robot safety states pass controller checks.
+    expected_postconditions:
+      - The target package is visibly supported by the yellow platform.
+      - The left gripper has released the package and the robot remains safe.
+    supported_scenarios:
+      - A misplaced package is visible/localized in the trained body-side platform region.
+      - Target is not inferred solely from an expired tracker or partial-object bounding box.
+    execution_timeout: 90
+    execution_horizon: 25
+    execution_status: idle
+

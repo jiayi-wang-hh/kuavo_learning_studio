@@ -1,0 +1,118 @@
+[
+  {
+    "time_requested_s": 1.0,
+    "time_actual_s": 0.916895,
+    "image": "vlm_test/recovery_rgb_tactile/images/frame_00004.jpg",
+    "roi_image": "/home/kuavo/jiayi/kuavo_learning_studio/recovery_roi_0.92s.jpg",
+    "tactile": {
+      "alignment_ok": "1",
+      "tactile_n": "32",
+      "last_tactile_gap_ms": "0.041",
+      "left_normal_mean": "106.0",
+      "left_normal_max": "106.0",
+      "left_normal_last": "106.0",
+      "right_normal_mean": "0.0",
+      "right_normal_max": "0.0",
+      "right_normal_last": "0.0",
+      "left_tangential_mean": "218.0",
+      "right_tangential_mean": "0.0"
+    },
+    "model_output": {
+      "package_visible_near_front_edge": "false",
+      "package_extends_beyond_body_edge": "unknown",
+      "gripper_holding_this_package": "false",
+      "tactile_contact_evidence": "left",
+      "recovery_candidate": "unknown",
+      "recommended_skill": "stop_and_verify",
+      "visual_evidence": "package partially obscured"
+    },
+    "raw_output": "```json\n{\n  \"package_visible_near_front_edge\": \"false\",\n  \"package_extends_beyond_body_edge\": \"unknown\",\n  \"gripper_holding_this_package\": \"false\",\n  \"tactile_contact_evidence\": \"left\",\n  \"recovery_candidate\": \"unknown\",\n  \"recommended_skill\": \"stop_and_verify\",\n  \"visual_evidence\": \"package partially obscured\"\n}\n```"
+  },
+  {
+    "time_requested_s": 4.0,
+    "time_actual_s": 4.005558,
+    "image": "vlm_test/recovery_rgb_tactile/images/frame_00017.jpg",
+    "roi_image": "/home/kuavo/jiayi/kuavo_learning_studio/recovery_roi_4.01s.jpg",
+    "tactile": {
+      "alignment_ok": "1",
+      "tactile_n": "30",
+      "last_tactile_gap_ms": "23.767",
+      "left_normal_mean": "106.0",
+      "left_normal_max": "106.0",
+      "left_normal_last": "106.0",
+      "right_normal_mean": "0.0",
+      "right_normal_max": "0.0",
+      "right_normal_last": "0.0",
+      "left_tangential_mean": "218.0",
+      "right_tangential_mean": "0.0"
+    },
+    "model_output": {
+      "package_visible_near_front_edge": "false",
+      "package_extends_beyond_body_edge": "unknown",
+      "gripper_holding_this_package": "true",
+      "tactile_contact_evidence": "left",
+      "recovery_candidate": "unknown",
+      "recommended_skill": "stop_and_verify",
+      "visual_evidence": "package partially obscured"
+    },
+    "raw_output": "```json\n{\n  \"package_visible_near_front_edge\": \"false\",\n  \"package_extends_beyond_body_edge\": \"unknown\",\n  \"gripper_holding_this_package\": \"true\",\n  \"tactile_contact_evidence\": \"left\",\n  \"recovery_candidate\": \"unknown\",\n  \"recommended_skill\": \"stop_and_verify\",\n  \"visual_evidence\": \"package partially obscured\"\n}\n```"
+  },
+  {
+    "time_requested_s": 8.0,
+    "time_actual_s": 7.812555,
+    "image": "vlm_test/recovery_rgb_tactile/images/frame_00035.jpg",
+    "roi_image": "/home/kuavo/jiayi/kuavo_learning_studio/recovery_roi_7.81s.jpg",
+    "tactile": {
+      "alignment_ok": "1",
+      "tactile_n": "31",
+      "last_tactile_gap_ms": "6.133",
+      "left_normal_mean": "106.0",
+      "left_normal_max": "106.0",
+      "left_normal_last": "106.0",
+      "right_normal_mean": "0.0",
+      "right_normal_max": "0.0",
+      "right_normal_last": "0.0",
+      "left_tangential_mean": "218.0",
+      "right_tangential_mean": "0.0"
+    },
+    "model_output": {
+      "package_visible_near_front_edge": "false",
+      "package_extends_beyond_body_edge": "unknown",
+      "gripper_holding_this_package": "true",
+      "tactile_contact_evidence": "left",
+      "recovery_candidate": "unknown",
+      "recommended_skill": "stop_and_verify",
+      "visual_evidence": "package partially obscured"
+    },
+    "raw_output": "```json\n{\n  \"package_visible_near_front_edge\": \"false\",\n  \"package_extends_beyond_body_edge\": \"unknown\",\n  \"gripper_holding_this_package\": \"true\",\n  \"tactile_contact_evidence\": \"left\",\n  \"recovery_candidate\": \"unknown\",\n  \"recommended_skill\": \"stop_and_verify\",\n  \"visual_evidence\": \"package partially obscured\"\n}\n```"
+  },
+  {
+    "time_requested_s": 11.0,
+    "time_actual_s": 11.079521,
+    "image": "vlm_test/recovery_rgb_tactile/images/frame_00045.jpg",
+    "roi_image": "/home/kuavo/jiayi/kuavo_learning_studio/recovery_roi_11.08s.jpg",
+    "tactile": {
+      "alignment_ok": "1",
+      "tactile_n": "33",
+      "last_tactile_gap_ms": "2.895",
+      "left_normal_mean": "537.545",
+      "left_normal_max": "546.0",
+      "left_normal_last": "533.0",
+      "right_normal_mean": "0.0",
+      "right_normal_max": "0.0",
+      "right_normal_last": "0.0",
+      "left_tangential_mean": "294.394",
+      "right_tangential_mean": "0.0"
+    },
+    "model_output": {
+      "package_visible_near_front_edge": "false",
+      "package_extends_beyond_body_edge": "unknown",
+      "gripper_holding_this_package": "true",
+      "tactile_contact_evidence": "left",
+      "recovery_candidate": "unknown",
+      "recommended_skill": "stop_and_verify",
+      "visual_evidence": "package partially obscured"
+    },
+    "raw_output": "```json\n{\n  \"package_visible_near_front_edge\": \"false\",\n  \"package_extends_beyond_body_edge\": \"unknown\",\n  \"gripper_holding_this_package\": \"true\",\n  \"tactile_contact_evidence\": \"left\",\n  \"recovery_candidate\": \"unknown\",\n  \"recommended_skill\": \"stop_and_verify\",\n  \"visual_evidence\": \"package partially obscured\"\n}\n```"
+  }
+]

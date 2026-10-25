@@ -1,0 +1,5 @@
+{"label":"normal_0s","head_image":"outputs/vlm_test/rgb_tactile_60s/images/frame_00000.jpg"}
+{"label":"normal_6s","head_image":"outputs/vlm_test/rgb_tactile_60s/images/frame_00060.jpg"}
+{"label":"recovery_initial","head_image":"vlm_test/recovery_rgb_tactile/images/frame_00000.jpg"}
+{"label":"recovery_grasp","head_image":"vlm_test/recovery_rgb_tactile/images/frame_00035.jpg"}
+{"label":"recovery_returned","head_image":"vlm_test/recovery_rgb_tactile/images/frame_00080.jpg"}
