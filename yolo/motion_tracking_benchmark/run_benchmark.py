@@ -67,6 +67,28 @@ def parse_args() -> argparse.Namespace:
         help="Known static/robot scene classes used for detection context, not motion targets.",
     )
     parser.add_argument(
+        "--static-classes", default="yellow tray",
+        help="Generic target labels treated as fixed anchors after stable detection.",
+    )
+    parser.add_argument("--max-target-instances", type=int, default=6,
+                        help="Maximum dynamic object boxes initialized for generic SAM 2 tracking.")
+    parser.add_argument("--max-target-area-ratio", type=float, default=0.15,
+                        help="Reject oversized generic detections that merge several objects or scene context.")
+    parser.add_argument("--min-target-area-ratio", type=float, default=0.004,
+                        help="Reject tiny generic detections that are unlikely to be a package instance.")
+    parser.add_argument("--min-target-confidence", type=float, default=0.25,
+                        help="Minimum confidence for generic dynamic-object seeds.")
+    parser.add_argument("--min-target-aspect", type=float, default=0.35,
+                        help="Minimum width/height ratio for generic object boxes.")
+    parser.add_argument("--max-target-aspect", type=float, default=2.8,
+                        help="Maximum width/height ratio for generic object boxes.")
+    parser.add_argument("--arm-overlap-max", type=float, default=0.35,
+                        help="Reject a generic moving-object seed when this fraction of its box is covered by a detected robot arm/gripper.")
+    parser.add_argument("--static-anchor-iou", type=float, default=0.40,
+                        help="IoU used to associate repeated detections of a static anchor.")
+    parser.add_argument("--static-anchor-confirm-frames", type=int, default=2,
+                        help="Repeated detections required before freezing a generic static anchor.")
+    parser.add_argument(
         "--scene", choices=("toy_table", "generic"), default="toy_table",
         help="toy_table assigns the two target instances to left_toy/right_toy by image x position.",
     )
@@ -92,6 +114,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dino-model", default="IDEA-Research/grounding-dino-tiny")
     parser.add_argument("--dino-box-threshold", type=float, default=0.20)
     parser.add_argument("--dino-text-threshold", type=float, default=0.20)
+    parser.add_argument("--arm-box-threshold", type=float, default=0.15,
+                        help="Grounding DINO confidence threshold for robot arm/gripper context regions.")
     parser.add_argument("--dino-nms-iou", type=float, default=0.50)
     parser.add_argument("--association-iou", type=float, default=0.25)
     parser.add_argument("--detect-every", type=int, default=1, help="A: detector refresh interval.")
@@ -649,7 +673,11 @@ class GroundingDinoDetector:
 
 
 def build_backend(args):
-    if args.backend == "yolo_csrt": return BaselineYoloCsrtBackend(args)
+    if args.backend == "yolo_csrt":
+        # The established baseline intentionally preserves its toy-table
+        # filtering. Generic scenes use the same YOLO/CSRT tracker with the
+        # user-supplied open-vocabulary target labels.
+        return YoloCsrtBackend(args) if args.scene == "generic" else BaselineYoloCsrtBackend(args)
     if args.backend == "yolo_sam": return TemporalMaskBackend(args, YoloDetector(args))
     if args.backend == "grounding_dino_sam": return TemporalMaskBackend(args, GroundingDinoDetector(args))
     raise NotImplementedError("SAM 3 is a video-session backend; run sam3_adapter.py for option D.")

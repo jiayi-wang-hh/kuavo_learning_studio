@@ -27,6 +27,32 @@ The runner discovers every `*_head.mp4` rollout in `--input-dir`, and stores
 each result under its rollout name. Use `--scene generic` only when the video
 does not match the fixed toy/table setup.
 
+For a different scene, generic mode treats the comma-separated `--prompt`
+labels as targets and `--context-classes` as contextual objects. The YOLO-World
+and Grounding DINO + SAM 2.1 video adapters can seed up to
+`--max-target-instances` separate object boxes. Labels in `--static-classes`
+(the yellow tray in this setup) are associated across sampled frames and
+median-fused into a fixed box. Dynamic package candidates mostly covered by a
+detected robot arm or gripper are rejected using `--arm-overlap-max`; this
+reduces arm-as-package false positives while retaining packages beside a hand.
+Set both package color descriptions in `--prompt` to detect blue and pink bags.
+For example:
+
+```bash
+python yolo/motion_tracking_benchmark/run_benchmark.py \
+  --backend yolo_sam --scene generic \
+  --input-dir /path/to/clips --prompt 'blue mailer bag,pink padded envelope,yellow tray' \
+  --context-classes 'robot arm,robot gripper' \
+  --static-classes 'yellow tray' --max-target-instances 6 \
+  --sam2-config configs/sam2.1/sam2.1_hiera_s.yaml \
+  --sam2-checkpoint /path/to/sam2.1_hiera_small.pt \
+  --output-dir outputs/motion_tracking/package_tracking
+```
+
+`--detect-every N` samples frames only while selecting generic SAM 2 seed
+boxes; SAM 2 still propagates through every frame of the input video. SAM 2
+can run on CPU when `--device cpu` is set, but video propagation is slow.
+
 Option B uses the fixed toy-table prompt and SAM 2.1 video propagation:
 
 ```bash
