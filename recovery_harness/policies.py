@@ -112,3 +112,24 @@ class ActionExecutor:
             if callable(closer):
                 closer()
 
+
+class MockExecutionBackend:
+    """Explicit synthetic backend for orchestration tests; has no ROS/motor interface."""
+    is_simulated = True
+
+    def __init__(self):
+        self.actions = []
+        self.stopped = True
+
+    def execute_action(self, action) -> None:
+        self.actions.append(action)
+
+    def request_stop(self) -> None:
+        self.stopped = True
+
+    def wait_until_stopped(self, timeout_seconds: float) -> bool:
+        return self.stopped
+
+    def get_execution_status(self) -> dict:
+        return {"status": "simulated", "action_count": len(self.actions), "robot_motion": False}
+

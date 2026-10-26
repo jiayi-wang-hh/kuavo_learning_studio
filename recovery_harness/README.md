@@ -2,7 +2,7 @@
 
 这个目录实现的是 Kuavo 包裹分拣的 VLM 技能路由与恢复控制框架。它把相机图像、可用的 CV 证据、触觉接触、机器人状态和 Skill Registry 一起交给 VLM；VLM 只提出技能建议，控制器再检查新鲜度、机器人状态、停止确认、目标定位、碰撞检查和 checkpoint 状态。
 
-**当前可以运行离线图片推理和 ROS 传感器只读 dry-run。当前 CLI 不会运行 VLA policy 或发送机器人动作。** FSM、LingBot-VLA policy adapter 和 fail-closed action executor 接口已实现，但真机动作后端、Recovery HF checkpoint 和可信的机器人安全/停止状态源仍未接通。
+**当前支持离线 VLM 路由、ROS 只读 live dry-run、异步 VLM 调度和离线 mock 执行。没有任何模式会隐式发送机器人动作。** mock policy/action backend 仅用于软件闭环，不加载 VLA、不连接 ROS motion interface。真机动作仍被禁止：真实 Kuavo executor、安全状态/停止确认和 Recovery HF export 尚未接通。
 
 ## 整体工作流程
 
@@ -16,8 +16,11 @@ flowchart TD
     S --> P[CV 证据与 head ROI 几何]
     S --> O[Multi-view Observation + 历史]
     P --> O
+    P --> E[CV event candidates]
+    T --> E
+    E --> SCH[VLM event / periodic scheduler]
     R[Skill Registry] --> V[VLM 动态注入 Skills 并输出 JSON 建议]
-    O --> V
+    O --> SCH --> V
     V --> D{Controller 校验建议/安全状态}
     D -->|普通场景| N[NORMAL / normal_sort 建议]
     D -->|异常候选| F[FAILURE_CANDIDATE]
@@ -59,6 +62,8 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
 | Right Wrist RGB | `/cam_r/color/image_raw/compressed` | 可选；默认关闭 |
 | DexHand tactile | `/dexhand/touch_state` | 左右手五指的多指接触摘要 |
 | Kuavo joints | `/sensors_data_raw` | 当前 joint state；不等同于安全或停止状态 |
+| Operator pause | `/kuavo/pause_state` | `true` 暂停 dry-run 的 VLM 调度；`false` 恢复 |
+| Operator stop | `/kuavo/stop_state` | `true` 锁存停止请求、取消策略并令 FSM 进入 `STOPPED` |
 
 图像放入各自的 `TimestampedBuffer`。ROS `header.stamp` 为 0 或无效时会标记为 receipt-time 来源。推理前会过滤过期图像/触觉；VLM 推理完成后会重新检查**实际用于该次推理的图像**以及最新机器人状态，防止耗时推理让旧建议直接生效。各相机分别取最近的新鲜帧，当前实现不是严格的跨相机硬件时间同步器。
 
@@ -98,6 +103,8 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
 
 VLM 只是建议者。它不拥有动作执行权限，也不生成关节命令、IK 或碰撞检查结果。
 
+Live dry-run 使用 `EventTrigger` 和单 worker `VLMInvocationScheduler`：稳定 CV 异常需满足配置的连续帧数；已校准的 `BinaryContactProcessor` 输出接触状态转变时可立即触发；独立周期推理作为低频兜底。事件只决定何时推理，不决定技能。相同事件在 cooldown 内去重；推理不会并行，且完成后按本次输入图像年龄拒绝过期结果。ROS 主循环每 50 ms 调度，不等待 VLM 返回。触发、推理耗时和结果有效性会写入日志/输出。
+
 ### 6. Controller FSM 与安全门
 
 `RecoveryController` 区分 VLM 推荐、Controller 选择和实际 VLA 执行。FSM 状态为：
@@ -120,7 +127,7 @@ VLM 只是建议者。它不拥有动作执行权限，也不生成关节命令�
 
 完整真机序列预期为：停止 Normal 并确认机器人停稳 → 检查 Recovery 前置条件 → 加载 `recover_package` → 在授权的 executor 下逐步执行 action chunk → 等待独立的视觉/状态验证 → 仅在 Normal 起始状态支持性得到确认后重载并继续 `normal_sort`。如果任何一步不确定，停止并等待人工处理；不执行自动 Reset 或探索动作。
 
-**目前这条真机执行循环尚未由 CLI 接起。** 当前可运行入口没有创建 Kuavo action backend，也不会加载 VLA 或下发动作。FSM/adapter 是安全门和集成接口，不代表已完成真机闭环。
+离线 `--mock-execution` 可将经 VLM 路由后的决定交给 FSM，再调用纯 Python mock policy/action backend。Recovery 流程需要 manifest 明确提供 `mock_prechecks`、`mock_verification` 和 `mock_resume`；这些字段是合成测试输入，不可表示真实安全信号。该模式不加载 LingBot VLA，不创建 ROS publisher/service，也不会下发动作。验证成功还必须提供明确 `release_confirmed=true`；未知 tactile 或 action chunk 完成不构成释放证明。
 
 ## Checkpoint 和资源状态
 
@@ -157,14 +164,33 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
 
 前一轮 Qwen2.5-VL-7B routing probe 使用 2 帧 Normal 和 3 帧 Recovery。模型没有区分 Recovery 初始异常位置，详情见 [测试结果 JSONL](../outputs/vlm_test/skill_routing_probe_qwen25_7b.jsonl) 和 [测试摘要](../outputs/vlm_test/skill_routing_probe_qwen25_7b_summary.md)。之后增加的 ROI 坐标上下文尚未重新做 VLM 推理。
 
-### Live sensor-only dry-run（ROS 只读，不运行 VLA/动作）
+### Live sensor-only dry-run（ROS 只读，VLM 异步调度，不运行 VLA/动作）
 
 ```bash
 PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run live-dry-run \
   --max-observations 10
 ```
 
-`--max-observations 0` 表示持续运行到 Ctrl-C。该模式订阅配置中的 ROS 图像、触觉和关节状态，加载一次所选 VLM，输出每轮 freshness、感知、触觉、VLM recommendation 与 controller decision。它不创建动作 publisher/service，也不加载 VLA。
+`--max-observations 0` 表示持续运行到 Ctrl-C。该模式订阅配置中的 ROS 图像、触觉和关节状态，加载一个所选 VLM，周期/事件触发推理并输出触发证据、推理 freshness、推荐与 controller decision。它不创建动作 publisher/service，也不加载 VLA。
+
+它也订阅 `real_single_test.py` / `sim_auto_test.py` 使用的 pause/stop Bool topics：pause 为真时不调度新推理，暂停期间完成的推理结果会丢弃；stop 为真时锁存请求，调用 policy/executor 的 stop 请求并将 controller 置为 `STOPPED`。这些信号只是操作员请求。尤其 `/kuavo/stop_state` 不是机器人已物理停稳的确认，不能替代 recovery precheck 所需的 stopped acknowledgement。`sim_auto_test.py` 的 `/simulator/init`、`/simulator/success` 与 `/simulator/reset` 仅用于仿真 rollout，不适用于本 harness，也不会在这里调用。
+
+### Offline VLM + mock policy/action orchestration
+
+```bash
+PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
+  --manifest recovery_harness/examples/replay.example.jsonl --max-frames 10 --mock-execution
+```
+
+该命令调用配置的 VLM；VLA policy 和 Kuavo backend 均替换成显式 mock。要覆盖模拟 Recovery/Resume，manifest 中必须提供明确标为 mock 的前置条件、视觉/释放验证和 Normal 初始状态支持字段。输出 `robot_motion:false` 表示纯软件模拟。
+
+### Real-robot preflight (currently refused)
+
+```bash
+PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run real-robot
+```
+
+当前命令 fail-closed 并列出缺失接口；不会尝试加载 VLA 或创建动作 client。
 
 ## 当前限制与真机前必须完成的事项
 
@@ -174,4 +200,14 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run live-dry-r
 4. 需实现和验证 site-specific Kuavo `ActionExecutor`，覆盖 action 单位、限幅、控制模式、chunk 取消、停止确认和故障停机。当前代码不实例化会进入控制设置的 `KuavoRealEnv`。
 5. 需在实机环境验证完整 Normal → Stop → Recovery → Verify → Resume 流程，并验证 Normal full-task policy 对 Recovery 后状态的支持性。
 
-本目录没有执行模型训练、checkpoint 转换、完整数据集 replay 或真机动作。机器人运动保持禁用。
+## 验证状态与剩余集成阻塞
+
+- **实现并由单元测试覆盖**：Registry 描述/推荐合法性、CV/触觉事件候选、单 worker 事件/周期调度、重复事件合并、过期结果拒绝、FSM 路由与 fail-closed、Recovery 释放证据门、mock backend 无 ROS/motor 连接、真实 backend 缺失时报错。
+- **本次实际验证**：只运行轻量 Python unittest 与语法编译；未加载 Qwen/VLA，没有 ROS 运行环境联调，也没有真机测试。
+- **真实 ROS 观察**：只读订阅代码已存在，但本次没有启动 ROS，不能声称本次验证了 live observations。
+- **真机未验证且 real-robot CLI 当前拒绝执行**：需要 Kuavo action backend（动作单位/限幅/模式）、活动 policy 停止确认、pending chunk drain/cancel 确认、可信 stopped acknowledgement、joint/end-effector validity、collision/safety checker、gripper release evidence、Recovery HF checkpoint export 和 deployment authorization。
+- `/sensors_data_raw` 当前只提供 joint 数据；没有证据说明它包含安全、停稳、碰撞或夹爪释放状态。`/kuavo/stop_state` 也未验证为本 harness 停止确认，因此不会被当作安全信号。
+- Pause/stop topic 的消息类型和语义按 eval 脚本使用的 `std_msgs/Bool` 接入；它们可停止 harness 的推理/控制流程，但不会单独发布或保证硬件急停。
+- Detector plugin 默认仍为 `null`。若需 CV 触发，请配置已有且已验证的 detector 插件；无检测器时依靠周期 VLM 和触觉事件触发。CV geometry 是 image-space 候选证据，不是物理支撑判定。
+
+本次没有执行模型训练、checkpoint 转换、完整数据集 replay 或真机动作。机器人运动保持禁用。

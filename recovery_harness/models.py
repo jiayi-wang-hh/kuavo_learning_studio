@@ -54,4 +54,5 @@ class TrackEvidence:
     valid: bool
     source: str
     partial: bool = False
+    confidence: float | None = None
 

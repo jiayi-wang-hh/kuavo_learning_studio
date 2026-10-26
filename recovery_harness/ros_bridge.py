@@ -87,3 +87,41 @@ class KuavoSensorBridge:
             sub.unregister()
         self.subscribers.clear()
 
+
+class KuavoControlSignalBridge:
+    """Read-only pause/stop control signals shared with the Kuavo eval scripts.
+
+    A stop request is latched for this process. These topics are operator requests,
+    not acknowledgements that the robot has physically stopped.
+    """
+    def __init__(self, config: dict):
+        import threading
+        import rospy
+        from std_msgs.msg import Bool
+
+        self.rospy = rospy
+        self.paused = threading.Event()
+        self.stop_requested = threading.Event()
+        topics = config.get("ros", {}).get("topics", {})
+        pause_topic = topics.get("pause_state", "/kuavo/pause_state")
+        stop_topic = topics.get("stop_state", "/kuavo/stop_state")
+        self.subscribers = [
+            rospy.Subscriber(pause_topic, Bool, self._pause_cb, queue_size=10),
+            rospy.Subscriber(stop_topic, Bool, self._stop_cb, queue_size=10),
+        ]
+
+    def _pause_cb(self, msg):
+        if bool(msg.data):
+            self.paused.set()
+        else:
+            self.paused.clear()
+
+    def _stop_cb(self, msg):
+        if bool(msg.data):
+            self.stop_requested.set()
+
+    def close(self):
+        for sub in self.subscribers:
+            sub.unregister()
+        self.subscribers.clear()
+

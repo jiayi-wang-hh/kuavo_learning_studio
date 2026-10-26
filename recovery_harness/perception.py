@@ -127,7 +127,7 @@ class CandidateTracker:
             if factory is not None:
                 tracker = factory()
                 tracker.init(gray_or_color, (x1, y1, x2 - x1, y2 - y1))
-            updated[ident] = (TrackEvidence(ident, detection.bbox_xyxy, 0.0, True, detection.source, detection.partial), tracker, now, now)
+            updated[ident] = (TrackEvidence(ident, detection.bbox_xyxy, 0.0, True, detection.source, detection.partial, detection.confidence), tracker, now, now)
         # Track only previously seeded candidates. Never treat tracking as recovery after expiry.
         for ident in unmatched:
             old, tracker, detected_at, last_update = self._tracks[ident]
@@ -140,7 +140,7 @@ class CandidateTracker:
             if not ok:
                 continue
             x, y, w, h = rect
-            updated[ident] = (TrackEvidence(ident, (x, y, x + w, y + h), age, True, "csrt", old.partial), tracker, detected_at, now)
+            updated[ident] = (TrackEvidence(ident, (x, y, x + w, y + h), age, True, "csrt", old.partial, old.confidence), tracker, detected_at, now)
         self._tracks = updated
         return [item[0] for item in updated.values()]
 
@@ -167,6 +167,7 @@ class PerceptionAdapter:
                 "track_id": track.track_id, "bbox_xyxy": list(track.bbox_xyxy),
                 "track_age_seconds": track.age_seconds, "track_valid": track.valid,
                 "track_source": track.source, "partial": track.partial,
+                "confidence": track.confidence,
                 "overlap_ratio": overlap, "body_side_violation": violation,
                 "geometry_validity": "unreliable" if overlap is None else "bbox_approximation",
             })

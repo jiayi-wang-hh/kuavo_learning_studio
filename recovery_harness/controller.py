@@ -41,7 +41,10 @@ class RecoveryController:
                robot_state: dict, dry_run: bool = True) -> dict:
         selected = "stop_and_verify"
         reason = "controller default: no safe transition established"
-        if observation_age is None or observation_age > self.max_observation_age:
+        if recommendation.recommended_skill not in self.registry.allowed_recommendations():
+            reason = f"stop because VLM recommended an unregistered skill: {recommendation.recommended_skill!r}"
+            self._stop_all()
+        elif observation_age is None or observation_age > self.max_observation_age:
             reason = "stop because the observation used for reasoning is stale or missing"
             self._stop_all()
         elif robot_state.get("valid") is not True or robot_state.get("safety_ok") is not True:
@@ -53,6 +56,7 @@ class RecoveryController:
             self.state = ControllerState.FAILURE_CANDIDATE
             if not recommendation.target_object:
                 reason = "recovery recommendation has no identified target"
+                self._stop_all()
             elif robot_state.get("safety_ok") is not True or robot_state.get("motion_state") != "running":
                 reason = "recovery target recognized; normal policy must be safely stopped and state validated"
                 self.state = ControllerState.STOPPING
@@ -62,10 +66,11 @@ class RecoveryController:
                 self.state = ControllerState.STOPPING
                 self.policies.request_stop()
         elif recommendation.recommended_skill == "stop_and_verify":
-            self.state, reason = ControllerState.STOPPED, recommendation.reason or "VLM requested human verification"
-            self.policies.request_stop()
+            reason = recommendation.reason or "VLM requested human verification"
+            self._stop_all()
         else:
-            reason = f"recommendation {recommendation.recommended_skill!r} is not allowed in {self.state.value}"
+            reason = f"stop because recommendation {recommendation.recommended_skill!r} is not allowed in {self.state.value}"
+            self._stop_all()
         decision = {
             "controller_state": self.state.value, "active_skill": self.active_skill,
             "vlm_recommendation": asdict(recommendation), "controller_selected_skill": selected,
@@ -83,22 +88,43 @@ class RecoveryController:
             self.registry.update_execution_status(self.active_skill, "stopped")
         self.state = ControllerState.STOPPED
 
+    def emergency_stop(self, reason: str) -> dict:
+        """Latch the controller in STOPPED and request policy/executor cancellation."""
+        self._stop_all()
+        self.last_decision = {
+            "controller_state": self.state.value,
+            "active_skill": self.active_skill,
+            "controller_selected_skill": "stop_and_verify",
+            "decision_reason": reason,
+            "execution_status": "stop_requested",
+            "timestamp": time.time(),
+        }
+        log.warning("operator_stop_signal %s", self.last_decision)
+        return self.last_decision
+
     def approve_recovery_switch(self, *, robot_state: dict, observations_fresh: bool,
                                 target_localized: bool, collision_clear: bool,
-                                recovery_checkpoint_ready: bool) -> tuple[bool, str]:
+                                recovery_checkpoint_ready: bool, policy_cancel_acknowledged: bool = False,
+                                action_queue_drained: bool = False, mock_execution: bool = False) -> tuple[bool, str]:
         checks = {
             "controller is stopping": self.state == ControllerState.STOPPING,
+            "robot state is valid": robot_state.get("valid") is True,
+            "joint state is valid": robot_state.get("joint_state_valid") is True,
+            "end-effector state is valid": robot_state.get("end_effector_state_valid") is True,
             "robot reports stopped": robot_state.get("motion_state") == "stopped",
             "safety state valid": robot_state.get("safety_ok") is True,
+            "active policy cancellation acknowledged": policy_cancel_acknowledged,
+            "pending action queue drained": action_queue_drained,
             "observations are fresh": observations_fresh,
             "target is localized": target_localized,
             "collision check passed": collision_clear,
             "recovery checkpoint is loadable": recovery_checkpoint_ready,
         }
-        try:
-            self.registry.resolve_checkpoint(self.registry.get("recover_package"))
-        except Exception:
-            checks["selected recovery checkpoint resolves to inference format"] = False
+        if not mock_execution:
+            try:
+                self.registry.resolve_checkpoint(self.registry.get("recover_package"))
+            except Exception:
+                checks["selected recovery checkpoint resolves to inference format"] = False
         failed = [name for name, passed in checks.items() if not passed]
         if failed:
             self.state = ControllerState.STOPPED
@@ -120,17 +146,19 @@ class RecoveryController:
         self.state = ControllerState.RECOVERING
 
     def verify_recovery(self, *, package_on_platform: bool | None, target_visible: bool | None,
-                        tactile_contact: int | None, robot_safe: bool) -> tuple[bool, str]:
+                        tactile_contact: int | None, robot_safe: bool,
+                        release_confirmed: bool = False) -> tuple[bool, str]:
         if self.state != ControllerState.VERIFY_RECOVERY:
             raise RuntimeError(f"Cannot verify recovery from {self.state.value}")
         # VLA chunk completion and aggregate force do not prove successful placement.
-        if package_on_platform is True and target_visible is True and tactile_contact != 1 and robot_safe:
+        if (package_on_platform is True and target_visible is True and tactile_contact in (0, None)
+                and release_confirmed is True and robot_safe):
             self.registry.update_execution_status("recover_package", "verified")
             self.state = ControllerState.RESUME_PRECHECK
             return True, "package visually verified on platform; assess normal-policy initial state"
         self.state = ControllerState.STOPPED
         self.registry.update_execution_status("recover_package", "failed_verification")
-        return False, f"recovery not verified (package_on_platform={package_on_platform}, target_visible={target_visible}, contact={tactile_contact}, robot_safe={robot_safe})"
+        return False, f"recovery not verified (package_on_platform={package_on_platform}, target_visible={target_visible}, contact={tactile_contact}, release_confirmed={release_confirmed}, robot_safe={robot_safe})"
 
     def finish_recovery_execution(self) -> None:
         if self.state != ControllerState.RECOVERING:
@@ -143,7 +171,11 @@ class RecoveryController:
                        observations_fresh: bool) -> tuple[bool, str]:
         if self.state != ControllerState.RESUME_PRECHECK:
             return False, f"cannot resume from {self.state.value}"
-        if not (normal_initial_state_supported and robot_state.get("safety_ok") is True and observations_fresh and robot_state.get("motion_state") == "stopped"):
+        if not (normal_initial_state_supported and robot_state.get("valid") is True
+                and robot_state.get("joint_state_valid") is True
+                and robot_state.get("end_effector_state_valid") is True
+                and robot_state.get("safety_ok") is True and observations_fresh
+                and robot_state.get("motion_state") == "stopped"):
             self.state = ControllerState.STOPPED
             return False, "normal policy initial-state support or resume preconditions not verified"
         self.policies.initialize("normal_sort")
@@ -160,7 +192,10 @@ class RecoveryController:
             raise PermissionError("Normal-policy motion requires explicit authorization and an enabled executor")
         if self.state not in (ControllerState.NORMAL, ControllerState.TASK_COMPLETED):
             raise RuntimeError(f"Cannot start normal policy from {self.state.value}")
-        if not observations_fresh or not robot_state or robot_state.get("valid") is not True or robot_state.get("safety_ok") is not True or robot_state.get("motion_state") != "stopped":
+        if (not observations_fresh or not robot_state or robot_state.get("valid") is not True
+                or robot_state.get("joint_state_valid") is not True
+                or robot_state.get("end_effector_state_valid") is not True
+                or robot_state.get("safety_ok") is not True or robot_state.get("motion_state") != "stopped"):
             raise PermissionError("Normal-policy start requires fresh observations and verified stopped/safe robot state")
         self.policies.initialize("normal_sort")
         self.registry.update_execution_status("normal_sort", "running")

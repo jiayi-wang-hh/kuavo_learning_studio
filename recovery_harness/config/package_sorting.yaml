@@ -21,6 +21,8 @@ ros:
     right_wrist_rgb: /cam_r/color/image_raw/compressed
     tactile: /dexhand/touch_state
     robot_state: /sensors_data_raw
+    pause_state: /kuavo/pause_state
+    stop_state: /kuavo/stop_state
 
 perception:
   roi_config: /media/data/jiayi/dataset/roi_config.json
@@ -38,4 +40,10 @@ runtime:
   max_observation_age_seconds: 0.5
   reasoning_interval_seconds: 1.0
   motion_enabled: false
+
+triggers:
+  confidence_threshold: 0.5
+  persistence_hits: 2
+  cooldown_seconds: 3.0
+  position_delta_px: 30.0
 

@@ -8,12 +8,14 @@ from pathlib import Path
 
 import yaml
 
-from .controller import RecoveryController
+from .controller import ControllerState, RecoveryController
+from .events import EventTrigger
 from .models import CameraFrame, MultiViewObservation
 from .observation import ObservationSynchronizer
 from .perception import CandidateTracker, PerceptionAdapter, TemporalHistory
-from .policies import ActionExecutor, LingBotPolicyAdapter
+from .policies import ActionExecutor, LingBotPolicyAdapter, MockExecutionBackend
 from .registry import SkillRegistry
+from .scheduler import VLMInvocationScheduler
 from .tactile import BinaryContactProcessor
 from .vlm import QwenVLMAdapter, SceneReasoner
 
@@ -73,6 +75,15 @@ def _jsonl(path: str):
                 yield record
 
 
+class _MockPolicy:
+    """Synthetic policy used only by offline --mock-execution."""
+    def __init__(self): self.stop_requested = False; self.active_skill = None
+    def initialize(self, skill_id): self.active_skill, self.stop_requested = skill_id, False
+    def infer_action(self, observation): return [[0.0]]
+    def request_stop(self): self.stop_requested = True
+    def shutdown(self): self.request_stop()
+
+
 def preflight(config_path: str) -> int:
     cfg, root, registry = _load(config_path)
     report = {"preflight_only": True, "vlm_backend": cfg["vlm"]["backend"], "skills": []}
@@ -101,12 +112,14 @@ def preflight(config_path: str) -> int:
     return 1 if failed else 0
 
 
-def offline(config_path: str, manifest: str, max_frames: int = 10, output_path: str | None = None) -> int:
+def offline(config_path: str, manifest: str, max_frames: int = 10, output_path: str | None = None,
+            mock_execution: bool = False) -> int:
     cfg, _, registry = _load(config_path)
     reasoner = SceneReasoner(registry, _vlm(cfg))
     perception = _perception(cfg)
-    policies = LingBotPolicyAdapter(registry)
-    controller = RecoveryController(registry, policies, ActionExecutor(False), max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
+    policies = _MockPolicy() if mock_execution else LingBotPolicyAdapter(registry)
+    mock_backend = MockExecutionBackend() if mock_execution else None
+    controller = RecoveryController(registry, policies, ActionExecutor(mock_execution, mock_backend), max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
     history = TemporalHistory()
     enabled = ["head"] + [name for name in ("left_wrist", "right_wrist") if cfg["cameras"][name]["enabled"]]
     count = 0
@@ -120,10 +133,54 @@ def offline(config_path: str, manifest: str, max_frames: int = 10, output_path: 
         obs, recommendation, latency, _ = _reason_observation(reasoner, perception, frames, record.get("robot_state"), record.get("tactile"), history.snapshot())
         decision = controller.decide(recommendation, observation_age=0.0 if frames.get("head") else None,
                                      robot_state=record.get("robot_state", {"valid": False}), dry_run=True)
+        mock_result = None
+        if mock_execution:
+            state = record.get("robot_state", {})
+            if recommendation.recommended_skill == "normal_sort" and controller.state == ControllerState.NORMAL:
+                try:
+                    controller.start_normal(explicitly_authorized=True, robot_state=state,
+                        observations_fresh=bool(frames.get("head")) and state.get("motion_state") == "stopped")
+                    controller.step_active_policy({"source": "synthetic_offline_mock"}, robot_state=state, observations_fresh=True)
+                    mock_result = mock_backend.get_execution_status()
+                except (PermissionError, RuntimeError) as exc:
+                    mock_result = {"execution": "not_started", "reason": str(exc), "robot_motion": False}
+            elif recommendation.recommended_skill == "recover_package" and controller.state == ControllerState.STOPPING:
+                checks = record.get("mock_prechecks", {})
+                mock_robot_state = checks.get("robot_state", state)
+                ok, why = controller.approve_recovery_switch(robot_state=checks.get("robot_state", state),
+                    observations_fresh=checks.get("observations_fresh", False),
+                    target_localized=checks.get("target_localized", False),
+                    collision_clear=checks.get("collision_clear", False),
+                    recovery_checkpoint_ready=checks.get("recovery_checkpoint_ready", False),
+                    policy_cancel_acknowledged=checks.get("policy_cancel_acknowledged", False),
+                    action_queue_drained=checks.get("action_queue_drained", False), mock_execution=True)
+                if ok and checks.get("explicit_authorization") is True:
+                    controller.begin_recovery(explicitly_authorized=True)
+                    controller.step_active_policy({"source": "synthetic_offline_mock"}, robot_state=mock_robot_state, observations_fresh=True)
+                    controller.finish_recovery_execution()
+                    verification = record.get("mock_verification", {})
+                    verified, verify_reason = controller.verify_recovery(
+                        package_on_platform=verification.get("package_on_platform"),
+                        target_visible=verification.get("target_visible"),
+                        tactile_contact=verification.get("tactile_contact"),
+                        release_confirmed=verification.get("release_confirmed", False),
+                        robot_safe=verification.get("robot_safe", False))
+                    resume = None
+                    if verified:
+                        resume_state = record.get("mock_resume", {})
+                        resume = controller.approve_resume(
+                            normal_initial_state_supported=resume_state.get("normal_initial_state_supported", False),
+                            robot_state=resume_state.get("robot_state", {}),
+                            observations_fresh=resume_state.get("observations_fresh", False))
+                    mock_result = {"precheck": why, "verification": verify_reason, "verified": verified, "resume": resume,
+                                   "executor": mock_backend.get_execution_status()}
+                else:
+                    mock_result = {"precheck": why, "execution": "not_started"}
         output = {"manifest_line": record["_line"], "label": record.get("label"),
                   "input_images": {view: record.get(f"{view}_image") for view in enabled if record.get(f"{view}_image")},
                   "inference_latency_seconds": latency,
-                  "vlm_recommendation": recommendation.raw, "controller_decision": decision}
+                  "vlm_recommendation": recommendation.raw, "controller_decision": decision,
+                  "mock_execution": mock_result}
         serialized = json.dumps(output, ensure_ascii=False, default=str)
         print(serialized, flush=True)
         if output_path:
@@ -132,6 +189,8 @@ def offline(config_path: str, manifest: str, max_frames: int = 10, output_path: 
         history.append({"recommendation": recommendation.raw, "perception": obs.perception})
         count += 1
     policies.shutdown()
+    if mock_backend:
+        mock_backend.shutdown()
     return 0
 
 
@@ -142,15 +201,33 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
     enabled = ["head"] + [name for name in ("left_wrist", "right_wrist") if cfg["cameras"][name]["enabled"]]
     synchronizer = ObservationSynchronizer(enabled, cfg["runtime"]["max_observation_age_seconds"])
     tactile = BinaryContactProcessor(cfg["tactile"]["finger_force_thresholds"], cfg["tactile"].get("valid_status_values"), cfg["tactile"]["sustain_seconds"])
-    from .ros_bridge import KuavoSensorBridge
+    from .ros_bridge import KuavoControlSignalBridge, KuavoSensorBridge
     bridge = KuavoSensorBridge(cfg, synchronizer, tactile)
-    reasoner = SceneReasoner(registry, _vlm(cfg))
+    control_signals = KuavoControlSignalBridge(cfg)
     perception, policies = _perception(cfg), LingBotPolicyAdapter(registry)
     controller = RecoveryController(registry, policies, ActionExecutor(False), max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
     history = TemporalHistory()
+    trigger_cfg = cfg.get("triggers", {})
+    event_trigger = EventTrigger(confidence_threshold=trigger_cfg.get("confidence_threshold", 0.5),
+        persistence_hits=trigger_cfg.get("persistence_hits", 2), cooldown_seconds=trigger_cfg.get("cooldown_seconds", 3.0),
+        position_delta_px=trigger_cfg.get("position_delta_px", 30.0))
+    scheduler = VLMInvocationScheduler(SceneReasoner(registry, _vlm(cfg)),
+        periodic_interval=cfg["runtime"]["reasoning_interval_seconds"],
+        max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
+    last_output = 0.0
     count = 0
     try:
         while not rospy.is_shutdown() and (max_observations <= 0 or count < max_observations):
+            if control_signals.stop_requested.is_set():
+                controller.emergency_stop("received latched /kuavo/stop_state operator request")
+                break
+            if control_signals.paused.is_set():
+                scheduler.set_paused(True)
+                # Drain a completed inference while paused; no recommendation is routed.
+                scheduler.poll()
+                rospy.sleep(0.1)
+                continue
+            scheduler.set_paused(False)
             now = time.monotonic()
             observation = synchronizer.snapshot(perception={})
             freshness = synchronizer.freshness(now=now)
@@ -164,34 +241,48 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
             tactile_age_before = now - synchronizer.tactile_received_at if synchronizer.tactile_received_at else float("inf")
             tactile_for_vlm = synchronizer.tactile if tactile_age_before <= cfg["runtime"]["max_observation_age_seconds"] else {"left_multifinger_contact": None, "right_multifinger_contact": None}
             frame_map = observation.images
-            obs, recommendation, latency, _ = _reason_observation(reasoner, perception, frame_map,
-                robot_state_for_vlm, tactile_for_vlm, history.snapshot())
-            # Re-read sensor age after the potentially multi-second VLM call.
-            post_inference_freshness = synchronizer.freshness()
-            # Check the exact frame used for reasoning; a newer buffer entry cannot make an old
-            # recommendation fresh after a long VLM call.
-            used_view_ages = {name: time.monotonic() - frame.received_at for name, frame in frame_map.items() if frame is not None}
-            head_age = used_view_ages.get("head")
-            recommendation_age = max(used_view_ages.values(), default=None)
-            current_robot_state = dict(synchronizer.robot_state)
-            robot_age = time.monotonic() - current_robot_state.get("received_at", 0.0) if current_robot_state else float("inf")
-            if robot_age > cfg["runtime"]["max_observation_age_seconds"]:
-                current_robot_state["valid"] = False
-            tactile_age = time.monotonic() - synchronizer.tactile_received_at if synchronizer.tactile_received_at else float("inf")
-            current_tactile = synchronizer.tactile if tactile_age <= cfg["runtime"]["max_observation_age_seconds"] else {"left_multifinger_contact": None, "right_multifinger_contact": None}
-            decision = controller.decide(recommendation, observation_age=recommendation_age,
-                robot_state=current_robot_state, dry_run=True)
-            print(json.dumps({"inference_latency_seconds": latency, "image_freshness_seconds": post_inference_freshness,
-                              "reasoning_frame_ages_seconds": used_view_ages,
-                              "robot_state_age_seconds": robot_age, "tactile_age_seconds": tactile_age,
-                              "perception": obs.perception, "tactile": current_tactile,
-                              "vlm_recommendation": recommendation.raw, "controller_decision": decision},
-                             ensure_ascii=False, default=str), flush=True)
-            history.append({"recommendation": recommendation.raw, "perception": obs.perception})
-            count += 1
-            rospy.sleep(cfg["runtime"]["reasoning_interval_seconds"])
+            head = frame_map.get("head")
+            perception_evidence = perception.inspect(head.image, view_name="head") if head else {"package_visible": "unknown", "geometry_validity": "unreliable"}
+            tactile_age = now - synchronizer.tactile_received_at if synchronizer.tactile_received_at else float("inf")
+            tactile_for_vlm = synchronizer.tactile if tactile_age <= cfg["runtime"]["max_observation_age_seconds"] else {"left_multifinger_contact": None, "right_multifinger_contact": None}
+            trigger_events = event_trigger.update(perception_evidence, tactile_for_vlm, robot_state_for_vlm, now=now)
+            observation.perception, observation.tactile = perception_evidence, tactile_for_vlm
+            observation.robot_state, observation.history = robot_state_for_vlm, history.snapshot()
+            completed = scheduler.tick(observation, trigger_events, now=now)
+            if completed and completed.get("valid") and completed.get("result"):
+                if control_signals.stop_requested.is_set():
+                    controller.emergency_stop("received latched /kuavo/stop_state operator request")
+                    break
+                if control_signals.paused.is_set():
+                    scheduler.set_paused(True)
+                    rospy.loginfo("Discarding VLM recommendation because /kuavo/pause_state is active")
+                    continue
+                recommendation, latency = completed["result"]
+                # Revalidate the actual input observation and current robot state after inference.
+                current_robot_state = dict(synchronizer.robot_state)
+                robot_age = time.monotonic() - current_robot_state.get("received_at", 0.0) if current_robot_state else float("inf")
+                if robot_age > cfg["runtime"]["max_observation_age_seconds"]:
+                    current_robot_state["valid"] = False
+                decision = controller.decide(recommendation, observation_age=completed["observation_age_seconds"],
+                    robot_state=current_robot_state, dry_run=True)
+                print(json.dumps({"trigger": completed["trigger"], "inference_latency_seconds": latency,
+                    "reasoning_observation_age_seconds": completed["observation_age_seconds"],
+                    "robot_state_age_seconds": robot_age, "perception": completed["observation"].perception,
+                    "tactile": completed["observation"].tactile, "vlm_recommendation": recommendation.raw,
+                    "controller_decision": decision}, ensure_ascii=False, default=str), flush=True)
+                history.append({"recommendation": recommendation.raw, "perception": completed["observation"].perception,
+                                "trigger": completed["trigger"]})
+                count += 1
+            elif completed and not completed.get("valid"):
+                rospy.logwarn("Discarding stale/invalid VLM result: %s", completed)
+            if time.monotonic() - last_output > 2.0 and trigger_events:
+                rospy.loginfo("VLM event trigger candidates: %s", [e.event_type for e in trigger_events])
+                last_output = time.monotonic()
+            rospy.sleep(0.05)
     finally:
         bridge.close()
+        control_signals.close()
+        scheduler.close()
         policies.shutdown()
     return 0
 
@@ -207,6 +298,9 @@ def main(argv=None) -> int:
     offline_parser.add_argument("--output", help="Append structured results as JSONL to this file")
     live = sub.add_parser("live-dry-run", help="Read ROS sensors and reason; creates no action publishers")
     live.add_argument("--max-observations", type=int, default=0, help="0 means until Ctrl-C")
+    offline_parser.add_argument("--mock-execution", action="store_true",
+        help="Use synthetic policy/actions after explicit mock preconditions; never connects to robot motion")
+    sub.add_parser("real-robot", help="Fail-closed preflight for real motion; execution backend is not configured")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.mode == "preflight":
@@ -214,7 +308,15 @@ def main(argv=None) -> int:
     if args.mode == "offline":
         if not 1 <= args.max_frames <= 10:
             parser.error("--max-frames must be between 1 and 10 for bounded replay")
-        return offline(args.config, args.manifest, max_frames=args.max_frames, output_path=args.output)
+        return offline(args.config, args.manifest, max_frames=args.max_frames, output_path=args.output,
+                       mock_execution=args.mock_execution)
+    if args.mode == "real-robot":
+        print(json.dumps({"execution": "refused", "motion_enabled": False,
+            "missing_interfaces": ["verified Kuavo action backend and action units/limits", "active policy cancellation acknowledgement",
+            "queued action chunk drain/cancel acknowledgement", "trustworthy robot-stopped acknowledgement",
+            "joint/end-effector validity provider", "collision/safety checker", "gripper release evidence provider",
+            "Recovery HF checkpoint export", "explicit deployment authorization"]}, indent=2, ensure_ascii=False))
+        return 2
     return live_dry_run(args.config, max_observations=args.max_observations)
 
 
