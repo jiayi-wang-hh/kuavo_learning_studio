@@ -36,7 +36,7 @@ APPLE_PICK_DELTA_Q_LIMIT = np.array(
         0.07,  # L1
         0.03,  # L2
         0.07,  # L3
-        0.18,  # L4
+        0.18，  # L4
         0.18,  # L5
         0.12,  # L6
         0.08,  # L7
@@ -80,6 +80,27 @@ BOTTLE_PICK_DELTA_Q_LIMIT = np.array(
 )
 
 
+PACKAGE_RECOVERY_DELTA_Q_LIMIT = np.array(
+    [
+        0.26,  # L1
+        0.14,  # L2
+        0.29,  # L3
+        0.36,  # L4
+        0.29,  # L5
+        0.24,  # L6
+        0.27,  # L7
+        0.22,  # R1
+        0.19,  # R2
+        0.32,  # R3
+        0.40,  # R4
+        0.59,  # R5
+        0.28,  # R6
+        0.24,  # R7    
+    ],
+    dtype=np.float64,
+)
+
+
 @dataclass(frozen=True)
 class SafetyProfile:
     delta_q_limit: np.ndarray
@@ -88,6 +109,7 @@ class SafetyProfile:
 SAFETY_PROFILES = {
     "apple_pick": SafetyProfile(delta_q_limit=APPLE_PICK_DELTA_Q_LIMIT),
     "bottle_pick": SafetyProfile(delta_q_limit=BOTTLE_PICK_DELTA_Q_LIMIT),
+    "package_recovery": SafetyProfile(delta_q_limit=PACKAGE_RECOVERY_DELTA_Q_LIMIT),
 }
 
 
