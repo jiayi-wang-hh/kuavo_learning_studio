@@ -195,6 +195,9 @@ class ConfigInference:
     max_episode_steps: int = 1000
     task_prompt: str = ""
 
+    safety_enabled: bool = False
+    safety_task: str = ""
+
     async_inference: bool = False
     async_control_hz: float = 0.0
     async_buffer_size: int = 32

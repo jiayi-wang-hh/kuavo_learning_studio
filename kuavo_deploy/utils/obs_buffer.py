@@ -7,6 +7,8 @@ import cv2
 import rospy
 from tqdm import tqdm
 import time
+import os
+import threading
 import sys
 from kuavo_deploy.config import KuavoConfig
 from sensor_msgs.msg import CompressedImage, JointState
@@ -27,6 +29,9 @@ class ObsBuffer:
         obs_key_map: Dict[str, Dict[str, Any]] = None,
         compute_func_map: Dict[str, Callable] = None,
     ) -> None:
+        # Optional metadata only; original return values stay unchanged when off.
+        self._progress_timing = os.environ.get("KUAVO_PROGRESS_MONITOR_TIMESTAMPS", "0") == "1"
+        self._progress_lock = threading.RLock()
         self.control_signal_manager = ControlSignalManager()
         self.ros_manager = ROSManager()
         # === 从 KuavoConfig 中提取环境配置 ===
@@ -185,6 +190,11 @@ class ObsBuffer:
 
     # ===== 公共方法 =====
     def _append_data(self, key, data, timestamp):
+        if self._progress_timing:
+            with self._progress_lock:
+                self.obs_buffer_data[key]["data"].append(data)
+                self.obs_buffer_data[key]["timestamp"].append(timestamp)
+            return
         self.obs_buffer_data[key]["data"].append(data)
         self.obs_buffer_data[key]["timestamp"].append(timestamp)
 
@@ -234,12 +244,34 @@ class ObsBuffer:
         return True
 
     def get_latest_obs(self):
+        if self._progress_timing:
+            with self._progress_lock:
+                obs = {k: list(buf["data"])[-1] for k, buf in self.obs_buffer_data.items()}
+                stamps = {k: list(buf["timestamp"])[-1] for k, buf in self.obs_buffer_data.items()}
+                return self._add_progress_stamp(obs, stamps)
         obs = {}
         for k, buf in self.obs_buffer_data.items():
             obs[k] = list(buf["data"])[-1]  # 取最新一帧
         return obs
 
+    def _add_progress_stamp(self, obs, stamps):
+        try:
+            from progress_monitor.observation_stamp import TIMING_KEY, stamp_observation
+            obs[TIMING_KEY] = stamp_observation(stamps, rospy.Time.now().to_sec())
+        except Exception as exc:
+            # Timestamp annotation is optional and must never stop robot inference.
+            log_robot.warning("Passive timestamp annotation unavailable: %s", exc)
+        return obs
+
     def get_aligned_obs(self, reference_keys=["/cam_h/color/image_raw/compressed"], max_dt=0.01, ratio=1.0):
+        if self._progress_timing:
+            with self._progress_lock:
+                stamps = {}
+                obs = self._get_aligned_obs(reference_keys, max_dt, ratio, stamps)
+                return None if obs is None else self._add_progress_stamp(obs, stamps)
+        return self._get_aligned_obs(reference_keys, max_dt, ratio)
+
+    def _get_aligned_obs(self, reference_keys, max_dt, ratio, selected_timestamps=None):
         """
         返回各观测时间上对齐的最新帧
         reference_keys: 以哪些key作为时间参考，默认 None -> 所有 key 最小的最新时间戳
@@ -284,6 +316,8 @@ class ObsBuffer:
                 aligned_obs[k] = None
             else:
                 aligned_obs[k] = data[idx]
+                if selected_timestamps is not None:
+                    selected_timestamps[k] = float(ts[idx])
 
         return aligned_obs
 

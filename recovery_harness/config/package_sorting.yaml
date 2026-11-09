@@ -26,7 +26,16 @@ ros:
 
 perception:
   roi_config: /media/data/jiayi/dataset/roi_config.json
-  detector_plugin: null  # Optional import path module:function for an existing YOLO-World/SAM provider.
+  detector_plugin: recovery_harness.plugins.grounding_dino_sam2:create_detector
+  detector_plugin_config:
+    dino_model: /home/kuavo/.cache/huggingface/hub/models--IDEA-Research--grounding-dino-tiny/snapshots/a2bb814dd30d776dcf7e30523b00659f4f141c71
+    sam2_source_root: /media/data/jiayi/sam2
+    sam2_config: /media/data/jiayi/sam2/sam2/configs/sam2.1/sam2.1_hiera_s.yaml
+    sam2_checkpoint: /media/data/jiayi/sam2/checkpoints/sam2.1_hiera_small.pt
+    device: cuda:1
+    package_labels: [blue mailer bag, pink padded envelope]
+    detect_every_frames: 5
+    max_target_instances: 6
   max_track_age_seconds: 1.5
 
 tactile:
@@ -38,11 +47,15 @@ tactile:
 
 runtime:
   max_observation_age_seconds: 0.5
+  max_vlm_result_age_seconds: 3.0  # Keep stale-result gate; record completion and consumption ages before considering any retuning.
   reasoning_interval_seconds: 1.0
+  diagnostic_output_dir: outputs/recovery_harness/live_dry_run_diagnostics
   motion_enabled: false
 
 triggers:
   confidence_threshold: 0.5
+  mask_confidence_threshold: 0.5
+  max_detector_evidence_age_seconds: 1.0
   persistence_hits: 2
   cooldown_seconds: 3.0
   position_delta_px: 30.0

@@ -20,6 +20,7 @@ from kuavo_deploy.utils.obs_buffer import ObsBuffer
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
 from kuavo_deploy.utils.lowpass_filter import LowPassFilter
 from std_srvs.srv import SetBool
+from kuavo_deploy.safety.safety_supervisor import SafetySupervisor
 
 log_robot = setup_logger("robot")
 
@@ -29,6 +30,11 @@ class KuavoBaseRosEnv(gym.Env):
 
     def __init__(self, config: KuavoConfig):
         self._set_config(config.env)
+        inference_cfg = getattr(config, "inference", None)
+        self.safety_supervisor = None
+        if inference_cfg is not None and getattr(inference_cfg, "safety_enabled", False):
+            self.safety_supervisor = SafetySupervisor(inference_cfg.safety_task)
+            log_robot.info("Action SafetySupervisor enabled: %s", inference_cfg.safety_task)
         
         # 初始化ROS管理器
         self.ros_manager = ROSManager()
@@ -79,10 +85,13 @@ class KuavoBaseRosEnv(gym.Env):
         self.arm_state_keys = config_kuavo_env.arm_state_keys # observation.state 的key顺序
         self.ratio = config_kuavo_env.ratio
         self.frame_alignment = config_kuavo_env.frame_alignment
+        # Reset safety command history for each episode.
+        self.last_safety_sent_arm_command = None
+
         if self.direct_to_wbc:
             self.last_predicted_action = None
+            self.low_pass_filter.reset()
             self.is_first_step = True
-            self.low_pass_filter = LowPassFilter(cutoff_hz=1.0, dt=1.0 / self.control_rate_hz)
             log_robot.info(
                 f"Direct-to-WBC action interpolation: enabled={self.enable_action_interpolation}, "
                 f"inference_rate={self.ros_rate}Hz, control_rate={self.control_rate_hz}Hz, "
@@ -408,6 +417,74 @@ class KuavoBaseRosEnv(gym.Env):
     def step(self, action):
         t0 = time.time()
         log_robot.info(f"action: {action}")
+        if self.safety_supervisor is not None:
+            try:
+                q_actual = self.safety_supervisor._arm14(
+                    self.robot_state.arm_joint_state().position,
+                    "actual_feedback",
+                )
+
+                last_sent = getattr(
+                    self,
+                    "last_safety_sent_arm_command",
+                    None,
+                )
+
+                if last_sent is None:
+                    # First action: compare target with measured state.
+                    results = [
+                        self.safety_supervisor.check(
+                            action,
+                            q_actual,
+                        )
+                    ]
+
+                else:
+                    # Check model command continuity.
+                    continuity_result = (
+                        self.safety_supervisor.check_command_continuity(
+                            action,
+                            last_sent,
+                        )
+                    )
+
+                    # Independently check tracking.
+                    tracking_result = (
+                        self.safety_supervisor.check_tracking(
+                            last_sent,
+                            q_actual,
+                        )
+                    )
+
+                    results = [
+                        continuity_result,
+                        tracking_result,
+                    ]
+
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Safety check failed; refusing action: {exc}"
+                ) from exc
+
+            for result in results:
+                if not result.safe:
+                    details = result.details
+
+                    log_robot.critical(
+                        "Action safety violation: "
+                        "task=%s reason=%s joints=%s "
+                        "delta_q=%s limits=%s",
+                        self.safety_supervisor.task_name,
+                        result.reason,
+                        details.get("violating_joint_names", []),
+                        details.get("delta_q"),
+                        details.get("delta_q_limit"),
+                    )
+
+                    raise RuntimeError(
+                        "Action rejected by SafetySupervisor; "
+                        "robot command was not sent"
+                    )
         # check clip action in action space
         action = self.check_action(action, mode='default')
         t1 = time.time()
@@ -528,13 +605,79 @@ class KuavoBaseRosEnv(gym.Env):
         log_robot.info(f"rate.sleep time: {self.sleep_time:.3f}s")
 
     def safe_control_arm(self, target_position):
+
+        target_position = np.asarray(
+            target_position,
+            dtype=np.float64,
+        )
+
+        if self.safety_supervisor is not None:
+
+            q_actual = self.safety_supervisor._arm14(
+                self.robot_state.arm_joint_state().position,
+                "actual_feedback",
+            )
+
+            previous = getattr(
+                self,
+                "last_safety_sent_arm_command",
+                None,
+            )
+
+            if previous is None:
+                result = self.safety_supervisor._compare(
+                    target_position,
+                    q_actual,
+                    "initial_target_deviation_limit_exceeded",
+                )
+                results = [result]
+
+            else:
+                continuity_result = (
+                    self.safety_supervisor._compare(
+                        target_position,
+                        previous,
+                        "final_command_continuity_limit_exceeded",
+                    )
+                )
+
+                tracking_result = (
+                    self.safety_supervisor.check_tracking(
+                        previous,
+                        q_actual,
+                    )
+                )
+
+                results = [
+                    continuity_result,
+                    tracking_result,
+                ]
+
+            for result in results:
+                if not result.safe:
+                    raise RuntimeError(
+                        f"Final arm command rejected: "
+                        f"{result.reason}; "
+                        f"joints={result.details.get('violating_joint_names')}"
+                    )
+
         try:
-            self.robot.control_arm_joint_positions(target_position)
+            self.robot.control_arm_joint_positions(
+                target_position
+            )
+
+            if self.safety_supervisor is not None:
+                # SDK returned without an exception.
+                # This is NOT hardware execution acknowledgment.
+                self.last_safety_sent_arm_command = (
+                    target_position.copy()
+                )
+
         except RuntimeError as e:
-            # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
             if "must be in stance state" in str(e):
-                log_robot.warning(f"⚠️  无法发送手臂命令：机器人当前状态不允许 (可能正在底盘移动)")
-                log_robot.debug(f"   详细错误: {e}")
+                log_robot.warning(
+                    "无法发送手臂命令：机器人当前状态不允许"
+                )
             else:
                 raise
 
@@ -613,6 +756,9 @@ class KuavoBaseRosEnv(gym.Env):
                 obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=float('inf'),ratio=self.ratio)
         else:
             obs_from_buffer = self.obs_buffer.get_latest_obs()
+
+        # Metadata follows the very same selected buffers, never a later camera read.
+        progress_timing = obs_from_buffer.pop("_progress_monitor_observation", None)
         
         for k,v in obs_from_buffer.items():
             # remap key
@@ -654,6 +800,8 @@ class KuavoBaseRosEnv(gym.Env):
         log_robot.info(f"STATE: contained {state_keys}, concated value: {obs['observation.state']}")
 
         obs["observation.state"] = torch.from_numpy(obs["observation.state"]).float().unsqueeze(0)
+        if progress_timing is not None:
+            obs["_progress_monitor_observation"] = progress_timing
         return obs    
 
     def close(self):

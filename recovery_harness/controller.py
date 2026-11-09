@@ -41,7 +41,7 @@ class RecoveryController:
                robot_state: dict, dry_run: bool = True) -> dict:
         selected = "stop_and_verify"
         reason = "controller default: no safe transition established"
-        if recommendation.recommended_skill not in self.registry.allowed_recommendations():
+        if not isinstance(recommendation.recommended_skill, str) or recommendation.recommended_skill not in self.registry.allowed_recommendations():
             reason = f"stop because VLM recommended an unregistered skill: {recommendation.recommended_skill!r}"
             self._stop_all()
         elif observation_age is None or observation_age > self.max_observation_age:

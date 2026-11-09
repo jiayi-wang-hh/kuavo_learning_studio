@@ -9,6 +9,8 @@ from pathlib import Path
 import yaml
 
 from .controller import ControllerState, RecoveryController
+from .diagnostics import (classify_live_outcome, cv_detection_summary,
+                          recommendation_fields, save_live_snapshot)
 from .events import EventTrigger
 from .models import CameraFrame, MultiViewObservation
 from .observation import ObservationSynchronizer
@@ -46,7 +48,9 @@ def _perception(cfg):
     if plugin:
         import importlib
         module_name, function_name = plugin.split(":", 1)
-        detector = getattr(importlib.import_module(module_name), function_name)
+        factory = getattr(importlib.import_module(module_name), function_name)
+        plugin_config = cfg["perception"].get("detector_plugin_config")
+        detector = factory(plugin_config) if plugin_config is not None else factory
     tracker = CandidateTracker(detector=detector, max_track_age_seconds=float(cfg["perception"].get("max_track_age_seconds", 1.5)))
     image_size = (roi.get("image_width"), roi.get("image_height")) if roi.get("image_width") and roi.get("image_height") else None
     adapter = PerceptionAdapter(tracker, roi.get("platform_polygon"), roi.get("body_side_edge"), image_size=image_size)
@@ -55,7 +59,7 @@ def _perception(cfg):
 
 def _reason_observation(reasoner, perception, frame_map, robot_state=None, tactile=None, history=None):
     head = frame_map.get("head")
-    evidence = perception.inspect(head.image, view_name="head") if head else {"package_visible": "unknown", "geometry_validity": "unreliable"}
+    evidence = perception.inspect(head.image, view_name="head", now=head.received_at) if head else {"package_visible": "unknown", "geometry_validity": "unreliable"}
     obs = MultiViewObservation(
         images=frame_map,
         tactile=tactile or {}, robot_state=robot_state or {"valid": False},
@@ -73,6 +77,25 @@ def _jsonl(path: str):
                 record = json.loads(line)
                 record["_line"] = line_number
                 yield record
+
+
+def _compact_history_entry(recommendation, perception: dict, trigger) -> dict:
+    trigger_event = trigger.get("event") if isinstance(trigger, dict) else None
+    return {
+        "recommendation": recommendation_fields(recommendation),
+        "perception": {
+            "package_visible": perception.get("package_visible"),
+            "package_location": perception.get("package_location"),
+            "body_side_violation": perception.get("body_side_violation"),
+            "candidate_tracks": [{key: track.get(key) for key in (
+                "track_id", "label", "bbox_xyxy", "partial", "confidence",
+                "mask_body_side_extension")}
+                for track in perception.get("candidate_tracks", [])],
+        },
+        "trigger": ({"type": trigger.get("type"),
+                     "event_type": getattr(trigger_event, "event_type", None)}
+                    if isinstance(trigger, dict) else None),
+    }
 
 
 class _MockPolicy:
@@ -196,7 +219,7 @@ def offline(config_path: str, manifest: str, max_frames: int = 10, output_path: 
 
 def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
     import rospy
-    cfg, _, registry = _load(config_path)
+    cfg, root, registry = _load(config_path)
     rospy.init_node("kuavo_vlm_skill_router_dry_run", anonymous=False, disable_signals=True)
     enabled = ["head"] + [name for name in ("left_wrist", "right_wrist") if cfg["cameras"][name]["enabled"]]
     synchronizer = ObservationSynchronizer(enabled, cfg["runtime"]["max_observation_age_seconds"])
@@ -205,15 +228,22 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
     bridge = KuavoSensorBridge(cfg, synchronizer, tactile)
     control_signals = KuavoControlSignalBridge(cfg)
     perception, policies = _perception(cfg), LingBotPolicyAdapter(registry)
-    controller = RecoveryController(registry, policies, ActionExecutor(False), max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
+    controller = RecoveryController(registry, policies, ActionExecutor(False), max_observation_age=cfg["runtime"].get("max_vlm_result_age_seconds", 3.0))
     history = TemporalHistory()
     trigger_cfg = cfg.get("triggers", {})
     event_trigger = EventTrigger(confidence_threshold=trigger_cfg.get("confidence_threshold", 0.5),
         persistence_hits=trigger_cfg.get("persistence_hits", 2), cooldown_seconds=trigger_cfg.get("cooldown_seconds", 3.0),
-        position_delta_px=trigger_cfg.get("position_delta_px", 30.0))
+        position_delta_px=trigger_cfg.get("position_delta_px", 30.0),
+        mask_confidence_threshold=trigger_cfg.get("mask_confidence_threshold", 0.5),
+        max_detector_evidence_age=trigger_cfg.get("max_detector_evidence_age_seconds", 1.0))
     scheduler = VLMInvocationScheduler(SceneReasoner(registry, _vlm(cfg)),
         periodic_interval=cfg["runtime"]["reasoning_interval_seconds"],
-        max_observation_age=cfg["runtime"]["max_observation_age_seconds"])
+        max_observation_age=cfg["runtime"]["max_observation_age_seconds"],
+        max_result_age=cfg["runtime"].get("max_vlm_result_age_seconds", 3.0))
+    diagnostic_dir = Path(cfg["runtime"].get(
+        "diagnostic_output_dir", "outputs/recovery_harness/live_dry_run_diagnostics"))
+    if not diagnostic_dir.is_absolute():
+        diagnostic_dir = root / diagnostic_dir
     last_output = 0.0
     count = 0
     try:
@@ -224,7 +254,28 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
             if control_signals.paused.is_set():
                 scheduler.set_paused(True)
                 # Drain a completed inference while paused; no recommendation is routed.
-                scheduler.poll()
+                paused_result = scheduler.poll()
+                if paused_result and paused_result.get("result"):
+                    paused_recommendation, _ = paused_result["result"]
+                    paused_observation = paused_result["observation"]
+                    paused_events = paused_observation.diagnostics.get("cv_event_candidates", [])
+                    paused_freshness = {key: paused_result.get(key) for key in (
+                        "valid", "discard_reason", "input_observation_age_seconds",
+                        "input_frame_ages_seconds", "completion_frame_ages_seconds",
+                        "consumption_frame_ages_seconds", "result_age_at_completion_seconds",
+                        "result_age_at_consumption_seconds", "inference_latency_seconds",
+                        "inference_wall_time_seconds", "polling_delay_seconds")}
+                    paused_snapshot = save_live_snapshot(diagnostic_dir, paused_observation,
+                        paused_events, freshness=paused_freshness,
+                        recommendation=paused_recommendation,
+                        outcome="vlm_result_discarded_while_paused")
+                    print(json.dumps({"event": "live_dry_run_vlm_result", "accepted": False,
+                        "outcome": "vlm_result_discarded_while_paused",
+                        "freshness": paused_freshness,
+                        "cv": cv_detection_summary(paused_observation.perception),
+                        "vlm_raw_recommendation": recommendation_fields(paused_recommendation),
+                        "diagnostic_snapshot": paused_snapshot, "controller_decision": None},
+                        ensure_ascii=False, default=str), flush=True)
                 rospy.sleep(0.1)
                 continue
             scheduler.set_paused(False)
@@ -242,14 +293,60 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
             tactile_for_vlm = synchronizer.tactile if tactile_age_before <= cfg["runtime"]["max_observation_age_seconds"] else {"left_multifinger_contact": None, "right_multifinger_contact": None}
             frame_map = observation.images
             head = frame_map.get("head")
-            perception_evidence = perception.inspect(head.image, view_name="head") if head else {"package_visible": "unknown", "geometry_validity": "unreliable"}
+            cv_start = time.perf_counter()
+            perception_evidence = perception.inspect(head.image, view_name="head", now=head.received_at) if head else {"package_visible": "unknown", "geometry_validity": "unreliable"}
+            cv_processing_seconds = time.perf_counter() - cv_start
             tactile_age = now - synchronizer.tactile_received_at if synchronizer.tactile_received_at else float("inf")
             tactile_for_vlm = synchronizer.tactile if tactile_age <= cfg["runtime"]["max_observation_age_seconds"] else {"left_multifinger_contact": None, "right_multifinger_contact": None}
             trigger_events = event_trigger.update(perception_evidence, tactile_for_vlm, robot_state_for_vlm, now=now)
             observation.perception, observation.tactile = perception_evidence, tactile_for_vlm
             observation.robot_state, observation.history = robot_state_for_vlm, history.snapshot()
-            completed = scheduler.tick(observation, trigger_events, now=now)
-            if completed and completed.get("valid") and completed.get("result"):
+            observation.diagnostics = perception.diagnostic_data()
+            observation.diagnostics["cv_processing_seconds"] = cv_processing_seconds
+            event_rows = [{
+                "event_type": event.event_type, "source": event.source,
+                "timestamp": event.timestamp,
+                "evidence": {key: value for key, value in event.evidence.items() if key != "robot_state"},
+            } for event in trigger_events]
+            observation.diagnostics["event_candidates"] = event_rows
+            observation.diagnostics["cv_event_candidates"] = [
+                event for event in event_rows if event["source"] == "cv"]
+            # Include synchronous CV/serialization work done since the frame
+            # arrived; the loop-entry timestamp would understate input age.
+            completed = scheduler.tick(observation, trigger_events, now=time.monotonic())
+            if completed and completed.get("result"):
+                completed["polling_loop_cv_seconds"] = cv_processing_seconds
+                recommendation, latency = completed["result"]
+                raw_recommendation = recommendation_fields(recommendation)
+                result_observation = completed["observation"]
+                result_perception = result_observation.perception
+                diagnostic_events = result_observation.diagnostics.get("cv_event_candidates", [])
+                freshness_record = {key: completed.get(key) for key in (
+                    "valid", "discard_reason", "input_observation_age_seconds",
+                    "input_frame_ages_seconds", "completion_frame_ages_seconds",
+                    "consumption_frame_ages_seconds",
+                    "result_age_at_completion_seconds", "result_age_at_consumption_seconds",
+                    "inference_latency_seconds", "inference_wall_time_seconds", "polling_delay_seconds")}
+                freshness_record["polling_loop_cv_seconds"] = completed.get("polling_loop_cv_seconds")
+                cv_summary = cv_detection_summary(result_perception)
+                if not completed.get("valid"):
+                    outcome = classify_live_outcome(result_perception, diagnostic_events,
+                        recommendation, accepted=False, controller_decision=None)
+                    snapshot_dir = save_live_snapshot(diagnostic_dir, result_observation,
+                        diagnostic_events, freshness=freshness_record,
+                        recommendation=recommendation, outcome=outcome)
+                    raw_record = {"event": "live_dry_run_vlm_result", "accepted": False,
+                        "outcome": outcome, "freshness": freshness_record,
+                        "cv": cv_summary, "vlm_raw_recommendation": raw_recommendation,
+                        "vlm_inference_timing": recommendation.raw.get("inference_timing", {}),
+                        "diagnostic_snapshot": snapshot_dir, "controller_decision": None}
+                    print(json.dumps(raw_record, ensure_ascii=False, default=str), flush=True)
+                    rospy.logwarn("Discarding stale/invalid VLM result: reason=%s input_age=%s completion_age=%s consumption_age=%s raw_recommendation=%s outcome=%s snapshot=%s",
+                        completed.get("discard_reason"), completed.get("input_observation_age_seconds"),
+                        completed.get("result_age_at_completion_seconds"), completed.get("result_age_at_consumption_seconds"),
+                        json.dumps(raw_recommendation, ensure_ascii=False, default=str), outcome, snapshot_dir)
+                    rospy.sleep(0.05)
+                    continue
                 if control_signals.stop_requested.is_set():
                     controller.emergency_stop("received latched /kuavo/stop_state operator request")
                     break
@@ -257,24 +354,37 @@ def live_dry_run(config_path: str, *, max_observations: int = 0) -> int:
                     scheduler.set_paused(True)
                     rospy.loginfo("Discarding VLM recommendation because /kuavo/pause_state is active")
                     continue
-                recommendation, latency = completed["result"]
                 # Revalidate the actual input observation and current robot state after inference.
                 current_robot_state = dict(synchronizer.robot_state)
                 robot_age = time.monotonic() - current_robot_state.get("received_at", 0.0) if current_robot_state else float("inf")
                 if robot_age > cfg["runtime"]["max_observation_age_seconds"]:
                     current_robot_state["valid"] = False
-                decision = controller.decide(recommendation, observation_age=completed["observation_age_seconds"],
+                decision = controller.decide(recommendation, observation_age=completed["result_age_seconds"],
                     robot_state=current_robot_state, dry_run=True)
-                print(json.dumps({"trigger": completed["trigger"], "inference_latency_seconds": latency,
-                    "reasoning_observation_age_seconds": completed["observation_age_seconds"],
+                outcome = classify_live_outcome(result_perception, diagnostic_events,
+                    recommendation, accepted=True, controller_decision=decision)
+                snapshot_dir = save_live_snapshot(diagnostic_dir, result_observation,
+                    diagnostic_events, freshness=freshness_record,
+                    recommendation=recommendation, outcome=outcome,
+                    controller_decision=decision)
+                print(json.dumps({"trigger": completed["trigger"], "outcome": outcome,
+                    "cv": cv_summary, "diagnostic_snapshot": snapshot_dir,
+                    "inference_latency_seconds": latency,
+                    "vlm_inference_timing": recommendation.raw.get("inference_timing", {}),
+                    "observation_age_at_inference_start_seconds": completed["input_observation_age_seconds"],
+                    "input_frame_ages_seconds": completed["input_frame_ages_seconds"],
+                    "completion_frame_ages_seconds": completed["completion_frame_ages_seconds"],
+                    "consumption_frame_ages_seconds": completed["consumption_frame_ages_seconds"],
+                    "result_age_at_completion_seconds": completed["result_age_at_completion_seconds"],
+                    "reasoning_result_age_seconds": completed["result_age_seconds"],
+                    "polling_delay_seconds": completed["polling_delay_seconds"],
+                    "polling_loop_cv_seconds": completed.get("polling_loop_cv_seconds"),
                     "robot_state_age_seconds": robot_age, "perception": completed["observation"].perception,
-                    "tactile": completed["observation"].tactile, "vlm_recommendation": recommendation.raw,
+                    "tactile": completed["observation"].tactile, "vlm_raw_recommendation": raw_recommendation,
                     "controller_decision": decision}, ensure_ascii=False, default=str), flush=True)
-                history.append({"recommendation": recommendation.raw, "perception": completed["observation"].perception,
-                                "trigger": completed["trigger"]})
+                history.append(_compact_history_entry(recommendation,
+                    completed["observation"].perception, completed["trigger"]))
                 count += 1
-            elif completed and not completed.get("valid"):
-                rospy.logwarn("Discarding stale/invalid VLM result: %s", completed)
             if time.monotonic() - last_output > 2.0 and trigger_events:
                 rospy.loginfo("VLM event trigger candidates: %s", [e.event_type for e in trigger_events])
                 last_output = time.monotonic()

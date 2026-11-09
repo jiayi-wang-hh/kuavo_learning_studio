@@ -12,9 +12,12 @@ env:  # 推理环境设置
   
 
 inference:  # 推理和评测设置
+  safety_enabled: true
+  safety_task: "package_recovery"
   go_bag_path: /home/kuavo/yuanmeng/start_bag/startbag_6pieces_clipped.bag # 推理时使用的rosbag路径
   policy_type: client  # 要加载的模型类型,kuavo_server模式选择client, 选择client模式后下面的pretrained_path失去作用
   pretrained_path: /path/to/checkpoint # 要加载的权重路径。
   eval_episodes: 10  # 评测跑多少条
-  max_episode_steps: 200  # 每条最多跑多少步
-  task_prompt: "Pick parcels from left and place them in the middle platform for weighting, then place them in the right basket"
+  max_episode_steps: 2000000000000000000000000000000000000000000  # 每条最多跑多少步
+  task_prompt: "pick the package from the near side and place it on the yellow platform"
+  # "Pick parcels from left and place them in the middle platform for weighting, then place them in the right basket"1

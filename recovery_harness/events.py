@@ -16,11 +16,14 @@ class TriggerEvent:
 class EventTrigger:
     """Debounce meaningful evidence; never decides which skill should run."""
     def __init__(self, *, confidence_threshold: float = 0.5, persistence_hits: int = 2,
-                 cooldown_seconds: float = 3.0, position_delta_px: float = 30.0):
+                 cooldown_seconds: float = 3.0, position_delta_px: float = 30.0,
+                 mask_confidence_threshold: float = 0.5, max_detector_evidence_age: float = 1.0):
         self.confidence_threshold = confidence_threshold
         self.persistence_hits = max(1, int(persistence_hits))
         self.cooldown_seconds = max(0.0, cooldown_seconds)
         self.position_delta_px = max(0.0, position_delta_px)
+        self.mask_confidence_threshold = float(mask_confidence_threshold)
+        self.max_detector_evidence_age = float(max_detector_evidence_age)
         self._counts: dict[str, int] = {}
         self._last_emit: dict[str, float] = {}
         self._previous_contacts: dict[str, int | None] = {}
@@ -50,21 +53,40 @@ class EventTrigger:
                 continue
             ident = str(track.get("track_id", "unknown"))
             partial = bool(track.get("partial", False))
-            if partial:
-                ev = self._candidate("partial:" + ident, "SCENE_UNCERTAIN", "cv", {"track_id": ident, "partial": True}, now)
+            ambiguous = bool(track.get("ambiguous", False))
+            package_label = track.get("label") in {"blue mailer bag", "pink padded envelope"}
+            platform_candidate = package_label and track.get("mask_available") is True and (track.get("platform_visible_pixels") or 0) > 0
+            if platform_candidate and (partial or track.get("occluded", False)):
+                ev = self._candidate("partial:" + ident, "SCENE_UNCERTAIN", "cv", {"track_id": ident, "partial": partial, "occluded": bool(track.get("occluded", False)), "mask_available": bool(track.get("mask_available"))}, now)
                 if ev: events.append(ev)
             confidence = track.get("confidence")
             confidence_ok = confidence is not None and confidence >= self.confidence_threshold
-            if not partial and track.get("track_source") != "csrt" and confidence_ok:
+            if package_label and ambiguous:
+                # Keep the track present for diagnostics without turning an
+                # unresolved package/arm conflict into a lost-package event.
                 current_ids.add(ident)
-            if not partial and track.get("track_source") != "csrt" and confidence_ok and track.get("body_side_violation") is True:
+            if package_label and track.get("mask_available") is True and not partial and not ambiguous and track.get("track_source") != "csrt" and confidence_ok:
+                current_ids.add(ident)
+            mask_confidence = track.get("mask_confidence")
+            detector_age = track.get("detector_age_seconds")
+            visual_evidence_ok = (
+                track.get("mask_available") is True
+                and track.get("mask_geometry_valid") is True
+                and mask_confidence is not None and mask_confidence >= self.mask_confidence_threshold
+                and detector_age is not None and detector_age <= self.max_detector_evidence_age
+                and not partial and not track.get("occluded", False)
+                and not ambiguous
+                and track.get("label") in {"blue mailer bag", "pink padded envelope"}
+                and track.get("track_source") == "grounding_dino_sam2"
+            )
+            if platform_candidate and visual_evidence_ok and confidence_ok and track.get("mask_body_side_extension") is True:
                 ev = self._candidate("outside:" + ident, "POSSIBLE_PACKAGE_OUTSIDE_PLATFORM", "cv", track, now)
                 if ev: events.append(ev)
             box = track.get("bbox_xyxy")
-            if isinstance(box, (list, tuple)) and len(box) == 4:
+            if platform_candidate and isinstance(box, (list, tuple)) and len(box) == 4:
                 box = tuple(float(v) for v in box)
                 old = self._previous_boxes.get(ident)
-                if old and not partial and track.get("track_source") != "csrt":
+                if old and not partial and not ambiguous and track.get("track_source") != "csrt":
                     old_c = ((old[0] + old[2]) / 2, (old[1] + old[3]) / 2)
                     new_c = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
                     delta = ((old_c[0] - new_c[0]) ** 2 + (old_c[1] - new_c[1]) ** 2) ** 0.5
@@ -77,10 +99,6 @@ class EventTrigger:
             if ev: events.append(ev)
         if current_ids:
             self._seen_tracks = current_ids
-        if perception and perception.get("geometry_validity") == "unreliable" and perception.get("package_visible") == "unknown":
-            ev = self._candidate("uncertain", "SCENE_UNCERTAIN", "cv", {"geometry_validity": "unreliable"}, now)
-            if ev: events.append(ev)
-
         for hand in ("left", "right"):
             key = f"{hand}_multifinger_contact"
             current = tactile.get(key) if isinstance(tactile, dict) else None

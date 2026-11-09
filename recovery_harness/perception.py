@@ -75,6 +75,68 @@ def crosses_body_edge(box: tuple[float, float, float, float], edge: list[tuple[f
     return cross(center) * cross(inside_reference) < 0
 
 
+def visible_mask_roi_evidence(mask, platform_polygon: list[tuple[float, float]],
+                              body_side_edge: list[tuple[float, float]], *, partial: bool = False) -> dict:
+    """Measure visible-mask overlap with the platform and its body-side exterior.
+
+    This reports image evidence only. It never estimates the hidden or physical
+    footprint of a partially visible package.
+    """
+    try:
+        import numpy as np
+        visible = np.asarray(mask, dtype=bool)
+    except Exception:
+        return {"mask_available": False, "mask_geometry_valid": False,
+                "platform_visible_pixels": None, "body_side_visible_pixels": None,
+                "visible_mask_extends_body_side": None}
+    if visible.ndim != 2 or len(platform_polygon) < 3 or len(body_side_edge) != 2:
+        return {"mask_available": True, "mask_geometry_valid": False,
+                "visible_mask_pixels": int(visible.sum()) if visible.ndim == 2 else None,
+                "platform_visible_pixels": None, "body_side_visible_pixels": None,
+                "visible_mask_extends_body_side": None}
+    ys, xs = np.nonzero(visible)
+    total = len(xs)
+    if not total:
+        return {"mask_available": True, "mask_geometry_valid": True,
+                "visible_mask_pixels": 0, "platform_visible_pixels": 0,
+                "body_side_visible_pixels": 0, "platform_overlap_ratio": 0.0,
+                "visible_mask_extends_body_side": False if not partial else None}
+
+    # Ray casting only over foreground mask pixels avoids building a second
+    # full-resolution raster for every package.
+    px, py = xs.astype(float) + 0.5, ys.astype(float) + 0.5
+    inside = np.zeros(total, dtype=bool)
+    for index, (x1, y1) in enumerate(platform_polygon):
+        x2, y2 = platform_polygon[(index + 1) % len(platform_polygon)]
+        crosses = (y1 > py) != (y2 > py)
+        x_intersection = (x2 - x1) * (py - y1) / ((y2 - y1) if y2 != y1 else 1e-12) + x1
+        inside ^= crosses & (px < x_intersection)
+
+    (ax, ay), (bx, by) = body_side_edge
+    cross_pixels = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    ref_x = sum(point[0] for point in platform_polygon) / len(platform_polygon)
+    ref_y = sum(point[1] for point in platform_polygon) / len(platform_polygon)
+    ref_cross = (bx - ax) * (ref_y - ay) - (by - ay) * (ref_x - ax)
+    outside_body_side = cross_pixels * ref_cross < 0
+    platform_count = int(inside.sum())
+    body_count = int(outside_body_side.sum())
+    # Require visible support on both sides of the annotated edge. A bag on
+    # the conveyor below the platform has no platform-overlap pixels and is
+    # therefore not a recovery candidate.
+    min_region_pixels = max(12, int(total * 0.01))
+    extends = platform_count >= min_region_pixels and body_count >= min_region_pixels
+    if partial:
+        extends_value = None
+    else:
+        extends_value = bool(extends)
+    return {"mask_available": True, "mask_geometry_valid": True,
+            "visible_mask_pixels": total, "platform_visible_pixels": platform_count,
+            "body_side_visible_pixels": body_count,
+            "platform_overlap_ratio": platform_count / total,
+            "body_side_visible_ratio": body_count / total,
+            "visible_mask_extends_body_side": extends_value}
+
+
 class CandidateTracker:
     """Optional external detector + short-lived CSRT tracker evidence."""
     def __init__(self, detector: Callable | None = None, max_track_age_seconds: float = 1.5):
@@ -82,16 +144,36 @@ class CandidateTracker:
         self.max_track_age_seconds = max_track_age_seconds
         self._tracks: dict[str, tuple[TrackEvidence, object | None, float, float]] = {}
         self._counter = 0
+        self._last_input_time: float | None = None
+        self._last_result: list[TrackEvidence] = []
+        self._last_detector_diagnostics: dict = {}
 
     def update(self, image, *, now: float | None = None) -> list[TrackEvidence]:
         now = time.monotonic() if now is None else now
+        if self._last_input_time is not None and now <= self._last_input_time:
+            return list(self._last_result)
         try:
             import numpy as np
             if not isinstance(image, np.ndarray):
                 image = np.asarray(image)
         except ImportError:
             pass
-        detections: list[Detection] = list(self.detector(image) if self.detector else [])
+        if self.detector:
+            import inspect
+            try:
+                accepts_now = "now" in inspect.signature(self.detector).parameters
+            except (TypeError, ValueError):
+                accepts_now = False
+            detections: list[Detection] = list(self.detector(image, now=now) if accepts_now else self.detector(image))
+            diagnostic_getter = getattr(self.detector, "diagnostic_data", None)
+            if callable(diagnostic_getter):
+                try:
+                    self._last_detector_diagnostics = diagnostic_getter() or {}
+                except Exception:
+                    self._last_detector_diagnostics = {"diagnostic_error": "detector diagnostics unavailable"}
+        else:
+            detections = []
+            self._last_detector_diagnostics = {}
         # Existing CSRT tracks are evidence only; expired/failed tracks become UNKNOWN.
         try:
             import cv2
@@ -124,10 +206,14 @@ class CandidateTracker:
                 factory = getattr(cv2, "TrackerCSRT_create", None)
                 if factory is None and hasattr(cv2, "legacy"):
                     factory = getattr(cv2.legacy, "TrackerCSRT_create", None)
-            if factory is not None:
+            if factory is not None and detection.source != "grounding_dino_sam2":
                 tracker = factory()
                 tracker.init(gray_or_color, (x1, y1, x2 - x1, y2 - y1))
-            updated[ident] = (TrackEvidence(ident, detection.bbox_xyxy, 0.0, True, detection.source, detection.partial, detection.confidence), tracker, now, now)
+            updated[ident] = (TrackEvidence(ident, detection.bbox_xyxy, 0.0, True, detection.source,
+                detection.partial, detection.confidence, detection.label, detection.mask,
+                detection.mask_confidence, detection.occluded, detection.detector_age_seconds,
+                detection.detector_bbox_xyxy, detection.ambiguous,
+                dict(detection.diagnostics or {})), tracker, now, now)
         # Track only previously seeded candidates. Never treat tracking as recovery after expiry.
         for ident in unmatched:
             old, tracker, detected_at, last_update = self._tracks[ident]
@@ -140,9 +226,14 @@ class CandidateTracker:
             if not ok:
                 continue
             x, y, w, h = rect
-            updated[ident] = (TrackEvidence(ident, (x, y, x + w, y + h), age, True, "csrt", old.partial, old.confidence), tracker, detected_at, now)
+            updated[ident] = (TrackEvidence(ident, (x, y, x + w, y + h), age, True, "csrt",
+                old.partial, old.confidence, old.label, old.mask, old.mask_confidence,
+                old.occluded, old.detector_age_seconds + (now - last_update), old.detector_bbox_xyxy,
+                old.ambiguous, dict(old.diagnostics or {})), tracker, detected_at, now)
         self._tracks = updated
-        return [item[0] for item in updated.values()]
+        self._last_input_time = now
+        self._last_result = [item[0] for item in updated.values()]
+        return list(self._last_result)
 
 
 class PerceptionAdapter:
@@ -154,6 +245,7 @@ class PerceptionAdapter:
         self.platform = [tuple(map(float, p)) for p in (platform_polygon or [])]
         self.body_edge = [tuple(map(float, p)) for p in (body_side_edge or [])]
         self.image_size = image_size
+        self._last_diagnostic_tracks: list[dict] = []
 
     def inspect(self, image, *, view_name: str = "head", now: float | None = None) -> dict:
         candidates = self.tracker.update(image, now=now) if view_name == "head" else []
@@ -163,14 +255,36 @@ class PerceptionAdapter:
             overlap = box_platform_overlap(track.bbox_xyxy, self.platform, complete_object=complete)
             violation = crosses_body_edge(track.bbox_xyxy, self.body_edge, complete_object=complete,
                                           platform_polygon=self.platform)
+            mask_evidence = visible_mask_roi_evidence(track.mask, self.platform, self.body_edge, partial=track.partial) if track.mask is not None else {}
+            mask_violation = mask_evidence.get("visible_mask_extends_body_side")
             evidence.append({
                 "track_id": track.track_id, "bbox_xyxy": list(track.bbox_xyxy),
                 "track_age_seconds": track.age_seconds, "track_valid": track.valid,
-                "track_source": track.source, "partial": track.partial,
+                "track_source": track.source, "partial": track.partial, "occluded": track.occluded,
+                "ambiguous": track.ambiguous,
+                "detector_diagnostics": track.diagnostics,
+                "label": track.label,
+                "detector_bbox_xyxy": list(track.detector_bbox_xyxy) if track.detector_bbox_xyxy else None,
                 "confidence": track.confidence,
-                "overlap_ratio": overlap, "body_side_violation": violation,
-                "geometry_validity": "unreliable" if overlap is None else "bbox_approximation",
+                "mask_confidence": track.mask_confidence,
+                "mask_available": track.mask is not None,
+                "detector_age_seconds": track.detector_age_seconds,
+                "overlap_ratio": overlap, "bbox_body_side_violation": violation,
+                "body_side_violation": mask_violation if track.mask is not None else violation,
+                "mask_body_side_extension": mask_violation,
+                **mask_evidence,
+                "geometry_validity": "visible_mask_only" if track.mask is not None else ("unreliable" if overlap is None else "bbox_approximation"),
             })
+        self._last_diagnostic_tracks = [{
+            "track_id": track.track_id,
+            "label": track.label,
+            "confidence": track.confidence,
+            "detector_bbox_xyxy": track.detector_bbox_xyxy,
+            "mask_bbox_xyxy": track.bbox_xyxy,
+            "mask": track.mask.copy() if hasattr(track.mask, "copy") else track.mask,
+            "ambiguous": track.ambiguous,
+            "detector_diagnostics": track.diagnostics,
+        } for track in candidates]
         valid_geometry = [item for item in evidence if item["overlap_ratio"] is not None]
         violations = [item["body_side_violation"] for item in evidence if item["body_side_violation"] is not None]
         if any(violations):
@@ -187,7 +301,7 @@ class PerceptionAdapter:
             "package_occluded": "unknown", "package_location": location,
             "body_side_violation": body_violation,
             "overlap_ratio": valid_geometry[0]["overlap_ratio"] if len(valid_geometry) == 1 else None,
-            "geometry_validity": "bbox_approximation" if valid_geometry else "unreliable",
+            "geometry_validity": "visible_mask_only" if any(track.mask is not None for track in candidates) else ("bbox_approximation" if valid_geometry else "unreliable"),
             "candidate_tracks": evidence,
             "platform_geometry_available": bool(self.platform),
             "body_side_edge_available": bool(self.body_edge),
@@ -198,6 +312,14 @@ class PerceptionAdapter:
             "body_side_edge_px": [list(point) for point in self.body_edge] if self.body_edge else None,
             "body_side_region_hint": "the exterior side beyond body_side_edge in the head image; do not apply this fixed ROI to wrist images" if self.body_edge else "unknown",
             "visual_evidence": "optional detector/tracker candidates; VLM always receives original image",
+        }
+
+    def diagnostic_data(self) -> dict:
+        return {
+            "platform_polygon_px": [list(point) for point in self.platform],
+            "body_side_edge_px": [list(point) for point in self.body_edge],
+            "detector_audit": self.tracker._last_detector_diagnostics,
+            "tracks": self._last_diagnostic_tracks,
         }
 
 

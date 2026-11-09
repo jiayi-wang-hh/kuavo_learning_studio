@@ -20,8 +20,8 @@ data:
 train:
   use_wandb: true
   wandb_project: lingbotvla
-  wandb_name: package_lora_failure_target_below_target_zone
-  output_dir: ../../../outputs/kuavo_lingbotvla/task3_package_lora_failure/target_below_target_zone/vlm_action_bs16_ga1_vs8
+  wandb_name: package_lora_failure_package_below_target_zone
+  output_dir: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8
   chunk_size: 50
 
   data_parallel_mode: fsdp2
@@ -50,7 +50,7 @@ train:
   micro_batch_size: 16
   gradient_accumulation_steps: 1
 
-  num_train_epochs: 50
+  num_train_epochs: 100
   max_steps: 500000000000000
 
   ckpt_manager: dcp

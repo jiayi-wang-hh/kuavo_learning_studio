@@ -1,0 +1,51 @@
+# Orchestration config, separate from the existing deployment env/inference YAML.
+server_config: configs/server/lingbot_package_skills.yaml
+normal_profile: package_normal
+recovery_profile: package_recovery
+vla_gpu: "1"
+vlm_gpu: "0"
+skill_service_manifest: outputs/skill_servers/current.json # Start python -m vlm_test.skill_service first.
+vlm_python: /home/kuavo/miniforge3/envs/qwen35/bin/python
+vlm_prompt: vlm_test/prompts/package_front_edge_tolerant_v4.json
+vlm_model: /media/data/jiayi/hf_model/Qwen3.5-9B
+vlm_precision: nf4
+qwen_service_url: http://127.0.0.1:5560 # Start python -m vlm_test.qwen_service first; empty string restores per-run loading.
+
+recovery_hits: 3             # Different, fresh input frames; never count repeated polls.
+normal_hits: 3               # Required again after recovery has stopped and settled.
+max_vote_gap_seconds: 2.5    # No vote accumulation across long missing-result gaps.
+max_vlm_result_age: 1.5
+max_observation_age: 0.5
+monitor_loss_timeout: 3.0    # Pause action submission after this valid-result gap.
+monitor_recovery_timeout: 15.0 # Wait for fresh stable votes while paused, then exit if unavailable.
+startup_timeout: 900.0
+rpc_timeout_ms: 15000
+settle_timeout: 8.0
+settle_window: 0.5
+settle_max_joint_delta: 0.015 # Radians over the stable window; demo parameters, not collision limits.
+settle_max_joint_velocity: 0.05 # Radians/s.
+recovery_timeout: 180.0       # Maximum Recovery execution time; independent of VLM verification waits.
+verify_timeout: 60.0         # Stable-scene verification while no new actions are submitted.
+minimum_recovery_seconds: 2.0
+max_recoveries: 3
+demo_timeout: 600.0
+left_release_threshold: 0.15 # qiangnao 1-DOF feedback normalized /100; 0=open, 1=closed.
+release_stable_seconds: 0.5
+left_grasp_command_threshold: 0.5 # Closure command followed by actual finger movement, not object-contact proof.
+left_grasp_feedback_threshold: 0.25 # Initial configurable proxy; not calibrated for grasp success.
+grasp_stable_seconds: 0.3
+
+recovery_right_arm_entry:
+  enabled: true
+  bag_path: /media/data/training_data/task3_package_pick_and_place_failure/package_below_target_zone/vr_record_2026-10-22-12-10-32.bag
+  duration: 3.0             # Minimum duration; enlarged automatically for derivative bounds.
+  rate_hz: 100
+  max_velocity: 0.25        # rad/s per joint; quintic interpolation, not collision checking.
+  max_acceleration: 0.5    # rad/s^2 per joint.
+  arrival_tolerance: 0.04  # rad (~2.29 degrees), measured right-arm feedback; operator-approved tolerance.
+  left_hold_tolerance: 0.10 # rad; abort on left-arm drift from held target.
+  arrival_timeout: 30.0     # Time after trajectory completion; keep measured arrival tolerance unchanged.
+  stable_seconds: 0.5
+
+normal_instruction: Pick parcels from left and place them in the middle platform for weighting, then place them in the right basket
+recovery_instruction: Pick up the package from the near side of the sorting platform with the left hand and place it back onto the sorting platform.

@@ -20,6 +20,7 @@ class MultiViewObservation:
     robot_state: dict[str, Any] = field(default_factory=dict)
     perception: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def available_views(self) -> list[str]:
@@ -44,6 +45,13 @@ class Detection:
     label: str = "package_candidate"
     source: str = "external"
     partial: bool = False
+    mask: Any = None
+    mask_confidence: float | None = None
+    occluded: bool = False
+    detector_age_seconds: float = 0.0
+    detector_bbox_xyxy: tuple[float, float, float, float] | None = None
+    ambiguous: bool = False
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -55,4 +63,12 @@ class TrackEvidence:
     source: str
     partial: bool = False
     confidence: float | None = None
+    label: str = "package_candidate"
+    mask: Any = None
+    mask_confidence: float | None = None
+    occluded: bool = False
+    detector_age_seconds: float = 0.0
+    detector_bbox_xyxy: tuple[float, float, float, float] | None = None
+    ambiguous: bool = False
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 

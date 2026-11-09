@@ -1766,7 +1766,7 @@ class FlowMatching(nn.Module):
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
         # Compute image and language key value cache
-        _, past_key_values = self.qwenvl_with_expert.forward(
+        prefix_outputs, past_key_values = self.qwenvl_with_expert.forward(
             attention_mask=prefix_att_2d_masks,
             position_ids=prefix_position_ids,
             past_key_values=None,
@@ -1774,6 +1774,19 @@ class FlowMatching(nn.Module):
             use_cache=self.config.use_cache,
             fill_kv_cache=True,
         )
+
+        # Optional read-only observer. Never changes prefix/KV tensors or denoising.
+        observer = getattr(self, "_progress_prefix_observer", None)
+        if observer is not None:
+            try:
+                observer(prefix_outputs[0], prefix_pad_masks, img_masks, lang_masks)
+            except Exception as error:
+                self._progress_prefix_observer = None
+                try:
+                    observer.__self__.disable(error)
+                except Exception:
+                    pass
+                logger.exception("Passive progress observer disabled; action inference continues")
 
         num_steps = num_steps if num_steps is not None else self.config.num_steps
         dt = torch.tensor(-1.0 / num_steps, dtype=dtype, device=device)

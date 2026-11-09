@@ -48,7 +48,7 @@ flowchart TD
 启动前可运行不加载模型的路径检查：
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run preflight
 ```
 
 ### 2. 收集和整理观测
@@ -67,21 +67,37 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
 
 图像放入各自的 `TimestampedBuffer`。ROS `header.stamp` 为 0 或无效时会标记为 receipt-time 来源。推理前会过滤过期图像/触觉；VLM 推理完成后会重新检查**实际用于该次推理的图像**以及最新机器人状态，防止耗时推理让旧建议直接生效。各相机分别取最近的新鲜帧，当前实现不是严格的跨相机硬件时间同步器。
 
+CompressedImage 由 Pillow 从 JPEG/PNG 数据直接解码为 RGB，不调用 ROS `cv_bridge` 的二进制扩展，避免其与当前 Python 环境 NumPy ABI 不兼容导致的崩溃。
+
 近期历史只记录之前的 VLM 建议与感知结果，不把旧目标位置当作当前确认位置。Left/Right Wrist 图像作为独立视角输入；没有标定时不会把 wrist 像素转换成 head 坐标。
 
 ### 3. CV 与几何证据
 
 `PerceptionAdapter` 负责合并可选 detector/tracker 输出和 head ROI 几何证据：
 
-1. 可以通过 `perception.detector_plugin: "module:function"` 接入现有检测或分割代码；Detector 结果不是 VLM 推理的前置条件。
-2. `CandidateTracker` 可维护短寿命 CSRT 轨迹，并记录来源、年龄、有效性和是否为部分可见对象。轨迹丢失或过期后不会无限沿用旧位置。
-3. Head ROI JSON 中的 `platform_polygon`、`body_side_edge` 和像素坐标会作为 VLM 上下文提供。当前配置指向 `/media/data/jiayi/dataset/roi_config.json`。
-4. 如果 detector 给出完整 package box，可计算 box 与 platform polygon 的近似重叠比例，以及 box 中心是否越过身体侧边缘。部分可见 box、CSRT-only box 或无效几何的数值为 `null`/`unknown`，不会冒充完整包裹 footprint。
-5. Wrist 图像不套用 head ROI；只让 VLM 独立理解 wrist 画面。
-
-仓库里曾有 YOLO-World/CSRT/SAM 实验的 `.pyc` 缓存，但对应源码当前不在 checkout 中，因此本 harness 没有声称复用了那些实现。未配置 detector 时，VLM 仍直接接收原始 RGB 图片和 ROI 坐标；检测不到候选框不会自动否决视觉推理。
+1. 默认 `perception.detector_plugin` 指向 `recovery_harness.plugins.grounding_dino_sam2:create_detector`。插件从 `yolo/motion_tracking_benchmark/sam2_video_adapter.py` 动态导入并复用已有 `_make_dino_detector` 与遮挡覆盖率 helper；Grounding DINO、SAM 2.1 源码、配置和权重均使用本机已有路径，不会下载或训练模型。
+2. 插件首次创建时只加载一次 Grounding DINO 与 SAM 2.1。每 5 个新的 head 帧运行一次 DINO，最多保留 6 个蓝/粉包裹实例，并用 DINO 框和上一帧低分辨率 mask prompt 调用 SAM2 image predictor 更新可见 mask。该在线入口复用已有 DINO 推理、SAM2 模型配置/权重；既有离线视频传播实现仍保留在 `sam2_video_adapter.py`。Mask/框之间以 IoU 关联多目标；机器人手臂高度覆盖的提议剔除，较小遮挡或触及画面边界会标记为 partial/occluded。SAM2 失败的实例不会被转成包裹越界事件。
+3. 本机资源：DINO snapshot 位于 `/home/kuavo/.cache/huggingface/hub/models--IDEA-Research--grounding-dino-tiny/snapshots/a2bb814dd30d776dcf7e30523b00659f4f141c71`；SAM2 源码 `/media/data/jiayi/sam2`、配置 `sam2/configs/sam2.1/sam2.1_hiera_s.yaml`、权重 `checkpoints/sam2.1_hiera_small.pt`。配置指定 `cuda:1`。缺少依赖或这些路径时，插件会报告具体依赖/路径并停止初始化，不会替换为虚构模型。
+4. Head ROI JSON `/media/data/jiayi/dataset/roi_config.json` 提供 `platform_polygon` 与 `body_side_edge`。对实际可见 mask 的前景像素计算落在平台内和身体侧边缘外的数量。只有包裹可见 mask 在边缘两侧均有足够像素时，才确认可见部分跨边；它不估计遮挡部分或包裹完整物理 footprint。只在传送带区域可见、没有平台像素支撑的包裹不成为 CV recovery event 候选。
+5. 越界事件 `POSSIBLE_PACKAGE_OUTSIDE_PLATFORM` 还要求完整/未遮挡的 mask、包裹类别、足够的 DINO/SAM2 置信度和足够新的 detector 证据。partial/occluded 包裹只产生带不确定性的 `SCENE_UNCERTAIN` 事件；无检测、空场景或无 ROI 不会凭空产生异常。CV 只负责安排 VLM 推理时机；最终由 VLM 根据 Registry 当前技能描述动态选择技能。
+6. SAM2 mask 遮罩仅是当前图像中的可见区域；不把它或任何 bbox 扩展解释为隐藏实体。Wrist 图像不套用 head ROI，仍由 VLM 独立理解。
 
 感知上下文包括 `package_visible`、`package_partially_visible`、`package_occluded`、`package_location`、`body_side_violation`、`overlap_ratio`、`geometry_validity`、track age/source 和 ROI 像素坐标。证据不足时显式使用 `unknown`。
+
+#### Grounding DINO package candidate regression（离线、默认不启用）
+
+`recovery_harness.detection` 提供可独立测试的候选处理逻辑；新增 detector 支持 `per_class`、`joint_plus_per_class`、`legacy_joint` 和仅诊断用的 `generic` 查询模式。默认插件仍使用原有路径，`package_sorting.yaml` 未切换到新模式。新路径会保留原始 phrase/score/box、阈值前 proposal、prompt 来源、候选去重证据、各过滤阶段决定和 arm/package 冲突。多个合法类别同时匹配时保留为 `ambiguous`；arm overlap 只有在 arm 框同时满足帧边缘锚定、细长几何和原 arm 分数下限时才拒绝候选，其余高重叠情况保留为不可执行的歧义诊断。
+
+可在已有 `lingbotvla` 环境和本地 DINO snapshot 上复现手工标注帧的比较；此命令只加载 DINO，不连接 ROS/VLA，也不调用 SAM2：
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.candidate_regression \
+  --manifest recovery_harness/outputs/candidate_pipeline_regression/annotations.json \
+  --model-path /home/kuavo/.cache/huggingface/hub/models--IDEA-Research--grounding-dino-tiny/snapshots/a2bb814dd30d776dcf7e30523b00659f4f141c71 \
+  --device cpu
+```
+
+结果写入 `outputs/candidate_pipeline_regression/results/`，包括阈值前候选、完整过滤审计、每帧叠图和手工样本汇总。只有在后续 monitor-only dry-run 中显式设置 detector 插件的 `candidate_pipeline_mode: per_class` 才会使用新推理路径；该设置不会启用动作。手工小样本指标用于本次回归对照，不代表泛化性能。
 
 ### 4. 触觉接触状态
 
@@ -103,7 +119,11 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
 
 VLM 只是建议者。它不拥有动作执行权限，也不生成关节命令、IK 或碰撞检查结果。
 
-Live dry-run 使用 `EventTrigger` 和单 worker `VLMInvocationScheduler`：稳定 CV 异常需满足配置的连续帧数；已校准的 `BinaryContactProcessor` 输出接触状态转变时可立即触发；独立周期推理作为低频兜底。事件只决定何时推理，不决定技能。相同事件在 cooldown 内去重；推理不会并行，且完成后按本次输入图像年龄拒绝过期结果。ROS 主循环每 50 ms 调度，不等待 VLM 返回。触发、推理耗时和结果有效性会写入日志/输出。
+Live dry-run 使用 `EventTrigger` 和单 worker `VLMInvocationScheduler`：稳定 CV 异常需满足配置的连续帧数；已校准的 `BinaryContactProcessor` 输出接触状态转变时可立即触发；独立周期推理作为低频兜底。事件只决定何时推理，不决定技能。调度时在调用前检查输入图像年龄是否不超过 `max_observation_age_seconds`；VLM 结果年龄按 `max_vlm_result_age_seconds`（默认 3 秒）分别在推理线程完成时和 ROS 主循环取用时检查。过期结果会记录解析出的推荐，但不会传给 `RecoveryController`。日志分开记录生成延迟、推理线程总耗时、完成时结果年龄和主循环取用时结果年龄，以区分模型慢和主循环晚取结果。ROS 主循环每 50 ms 调度，不等待 VLM 返回。
+
+每次成功解析出 VLM 推荐（包括 stale 结果）都会在 `runtime.diagnostic_output_dir` 保存同步诊断目录，默认是 `outputs/recovery_harness/live_dry_run_diagnostics`。目录包含该次推理实际使用的头部相机帧、平台 ROI 轮廓与裁剪图、Grounding DINO 框、SAM2 mask 和分割框、CV event candidates、mask 与平台/身体侧区域的像素交集统计、freshness 数据、VLM 原始推荐、结果分类和 Controller dry-run 决策。`snapshot.json` 汇总每个包裹的检测与区域交集。推理没有返回解析结果时不会生成这类快照。
+
+推理 profile 会记录模型 `hf_device_map`、CUDA 可用性、attention backend、processor 类型，以及图像预处理、输入传输、同步后的 generation、JSON decode、总耗时、输入/输出 token 数和 Qwen image grid 尺寸。另记录 VLM 完成后的主循环取用延迟和取用这一轮花在 CV 上的时间。传给后续 Prompt 的 history 使用精简字段，避免每轮重复塞入完整 Registry 描述。
 
 ### 6. Controller FSM 与安全门
 
@@ -142,7 +162,7 @@ Live dry-run 使用 `EventTrigger` 和单 worker `VLMInvocationScheduler`：稳�
 ### Preflight（不加载模型）
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run preflight
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run preflight
 ```
 
 此命令会核对 VLM、VLA base/source、norm stats、training config、robot config 和 checkpoint。当前预期是 Normal ready，Recovery 因 DCP 格式不能被 HF inference adapter 加载而报告失败。
@@ -156,7 +176,7 @@ JSONL 每行代表一个观测样本，图片路径相对当前工作目录。�
 ```
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run offline \
   --manifest recovery_harness/examples/replay.example.jsonl \
   --max-frames 10 \
   --output outputs/vlm_test/replay_results.jsonl
@@ -167,7 +187,7 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
 ### Live sensor-only dry-run（ROS 只读，VLM 异步调度，不运行 VLA/动作）
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run live-dry-run \
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run live-dry-run \
   --max-observations 10
 ```
 
@@ -178,7 +198,7 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run live-dry-r
 ### Offline VLM + mock policy/action orchestration
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run offline \
   --manifest recovery_harness/examples/replay.example.jsonl --max-frames 10 --mock-execution
 ```
 
@@ -187,7 +207,7 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run offline \
 ### Real-robot preflight (currently refused)
 
 ```bash
-PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run real-robot
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 -m recovery_harness.run real-robot
 ```
 
 当前命令 fail-closed 并列出缺失接口；不会尝试加载 VLA 或创建动作 client。
@@ -208,6 +228,6 @@ PYTHONPATH="$PWD:$PWD/src/lingbotvla" python3 -m recovery_harness.run real-robot
 - **真机未验证且 real-robot CLI 当前拒绝执行**：需要 Kuavo action backend（动作单位/限幅/模式）、活动 policy 停止确认、pending chunk drain/cancel 确认、可信 stopped acknowledgement、joint/end-effector validity、collision/safety checker、gripper release evidence、Recovery HF checkpoint export 和 deployment authorization。
 - `/sensors_data_raw` 当前只提供 joint 数据；没有证据说明它包含安全、停稳、碰撞或夹爪释放状态。`/kuavo/stop_state` 也未验证为本 harness 停止确认，因此不会被当作安全信号。
 - Pause/stop topic 的消息类型和语义按 eval 脚本使用的 `std_msgs/Bool` 接入；它们可停止 harness 的推理/控制流程，但不会单独发布或保证硬件急停。
-- Detector plugin 默认仍为 `null`。若需 CV 触发，请配置已有且已验证的 detector 插件；无检测器时依靠周期 VLM 和触觉事件触发。CV geometry 是 image-space 候选证据，不是物理支撑判定。
+- Grounding DINO + SAM2 插件与本机路径已接入默认 live/offline 配置；本次只验证静态代码与合成图形，不曾加载模型或验证真实画面推理。CV mask 是 image-space 可见区域证据，不是对包裹完整 footprint 或物理支撑状态的判定。
 
 本次没有执行模型训练、checkpoint 转换、完整数据集 replay 或真机动作。机器人运动保持禁用。

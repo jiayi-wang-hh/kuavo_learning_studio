@@ -36,6 +36,7 @@ from time import sleep
 import select, time, threading, queue
 # 全局变量
 current_proc = None
+current_is_skill_demo = False
 LOG_DIR = None
 
 
@@ -47,7 +48,7 @@ def cleanup(signum, frame):
         print(f"⏹️ 正在终止任务 (PID: {current_proc.pid})...")
         current_proc.terminate()
         try:
-            current_proc.wait(timeout=3)
+            current_proc.wait(timeout=45 if current_is_skill_demo else 3)
         except subprocess.TimeoutExpired:
             current_proc.kill()
         print("✅ 任务已终止")
@@ -96,7 +97,7 @@ def input_listener(input_queue, stop_event):
             # print("line: ", line)  # 换行
             input_queue.put(line.strip().lower())
 
-def interactive_controller():
+def interactive_controller(skill_demo=False):
     global current_proc, LOG_DIR
 
     print("🎮 交互式控制器已启动")
@@ -146,7 +147,7 @@ def interactive_controller():
             print("⏹️  发送停止信号...")
             os.kill(current_proc.pid, signal.SIGUSR2)
             try:
-                current_proc.wait(timeout=3)
+                current_proc.wait(timeout=45 if skill_demo else 3)
             except subprocess.TimeoutExpired:
                 current_proc.kill()
             print("✅ 任务已强制停止")
@@ -230,6 +231,8 @@ def print_task_menu(config_path="<config_path>", use_color=True):
         ("back_to_start", "普通任务: 回到 start_bag 起始位"),
         ("offline_bag", "离线任务：从一条 bag 读取 obs，跑完整推理链路并和 bag action 做误差验证"),
         ("退出", ""),
+        ("auto_skill_demo", "自动 Normal→Recovery→Normal Demo：VLM连续3次触发，无人工切换确认"),
+        ("skill_preflight", "仅校验 Skill checkpoint/config/norm 路径，不启动模型或机器人"),
     ]
 
     print(f"\n🟢 可选择的任务示例如下:")
@@ -286,8 +289,8 @@ def main():
     #     print("无效选择")
     #     return
 
-    # config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml").strip()
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
+    config_path = input("请输入自定义配置文件路径: 例如: configs/deploy/deploy.yaml").strip()
+    # config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/deploy/deploy.yaml"
     if not Path(config_path).exists():
         print(f"❌ 配置文件不存在: {config_path}")
         sys.exit(1)
@@ -297,15 +300,16 @@ def main():
     while True:
         print_task_menu(config_path=config_path, use_color=True)
 
-        sub_choice = input("请选择要执行的示例 (1-8): ").strip()
+        sub_choice = input("请选择要执行的示例 (1-10): ").strip()
 
-        def start_task(cmd):
-            global current_proc
+        def start_task(cmd, skill_demo=False):
+            global current_proc, current_is_skill_demo
+            current_is_skill_demo = skill_demo
             log_path = LOG_DIR / "kuavo_deploy.log"
             with open(log_path, "w") as f:
                 current_proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
             print(f"任务已启动，PID: {current_proc.pid}")
-            interactive_controller()
+            interactive_controller(skill_demo=skill_demo)
 
         if sub_choice == "1":
             start_task(["python3", str(script), "--task", "go", "--config", config_path])
@@ -324,6 +328,13 @@ def main():
         elif sub_choice == "8":
             print("退出")
             break
+        elif sub_choice in ("9", "10"):
+            demo = script_dir / "src" / "scripts" / "script_skill_demo.py"
+            command = [sys.executable, str(demo), "--config", config_path]
+            if sub_choice == "10":
+                subprocess.run(command + ["--preflight"], check=False)
+            else:
+                start_task(command + ["--execute"], skill_demo=True)
         else:
             print("❌ 无效选择: ", sub_choice)
 

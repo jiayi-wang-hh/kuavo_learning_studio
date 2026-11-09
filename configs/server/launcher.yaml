@@ -70,15 +70,32 @@ adapters:
       mode: conda
       conda_env: lingbotvla
     args:
-      checkpoint: /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt
+      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/task51_flower_arrangement/vlm_action_bs16_ga1_vs12/checkpoints/global_step_50000/hf_ckpt  # 必填：hf_ckpt 目录
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task5_flower_arrangement/vlm_action_bs16_ga1_vs8/checkpoints/global_step_50000/hf_ckpt
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task4_bottle_handover_lora/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39285/hf_ckpt  # 必填：hf_ckpt 目录
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task5_flower_arrangement/vlm_action_bs16_ga1_vs8/checkpoints/global_step_30000/hf_ckpt
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39620/hf_ckpt
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_28300/hf_ckpt
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt
+      # /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt
       # /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt
-      # /media/data/jiayi/outputs/lingbot-package/global_step_66480/hf_ckpt                # 必填：hf_ckpt 目录
-      training_config_path: /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt                # 必填：hf_ckpt 目录
+      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/task51_flower_arrangement/vlm_action_bs16_ga1_vs12/checkpoints/global_step_50000/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task4_bottle_handover_lora/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39285/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task5_flower_arrangement/vlm_action_bs16_ga1_vs8/checkpoints/global_step_30000/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39620/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_28300/hf_ckpt/lingbotvla_cli.yaml
+      # /media/data/jiayi/outputs/lingbotvla-bottle-pick/global_step_34910/hf_ckpt/lingbotvla_cli.yaml
       # /media/data/jiayi/outputs/lingbot-applel-pick/global_step_44910/hf_ckpt/lingbotvla_cli.yaml
-      # /media/data/jiayi/outputs/lingbot-package/global_step_66480/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
+      # /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt/lingbotvla_cli.yaml        # 留空 -> configs/vla/real_load20000h.yaml
       qwen25_path: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct                       # 必填：Qwen2.5-VL tokenizer/model 目录
-      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo.json
-      #/home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_apple.json
+      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_task51_flower_arrangement.json
+      # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_task4_bottle_handover.json
+      # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_task5_flower_arrangement.json
+      # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/task3_package_failure/task3_package_below_target_zone.json
+      # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/task3_package_failure/task3_package_below_target_zone.json
+      # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_apple.json
       # /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_package.json              # 必填：Kuavo norm stats JSON
       robot_config_path: ""                                   # 留空 -> kuavo_server/configs/lingbotvla/kuavo.yaml
       which_arm: both

@@ -28,8 +28,8 @@ class LingBotPolicyAdapter:
             from kuavo_server.adapters.lingbot_vla import LingBotVlaAdapter
         except ImportError as exc:
             raise RuntimeError(
-                "Could not import the existing LingBot adapter. Add src/lingbotvla to PYTHONPATH "
-                "and install that checkout's runtime dependencies."
+                "Could not import the existing LingBot adapter. Add the project root to PYTHONPATH "
+                "and install the project's runtime dependencies."
             ) from exc
         args = Namespace(
             checkpoint=str(checkpoint), model_repo_root=skill.model_repo_root,

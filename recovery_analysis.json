@@ -1,6 +1,0 @@
-{
-  "video": "/media/data/jiayi/dataset/recovery_clip.mp4",
-  "fps": 0.5,
-  "frames_sampled": 3,
-  "model_output": "```json\n{\n  \"package_at_front_edge\": \"unknown\",\n  \"extends_beyond_front_edge\": \"unknown\",\n  \"held_by_gripper\": \"unknown\",\n  \"recovery_required\": \"unknown\",\n  \"visual_evidence\": \"The image shows a yellow platform with a package partially on it. However, the exact position of the package relative to the front edge of the platform and whether it is held by a gripper cannot be determined from this view.\"\n}\n```"
-}

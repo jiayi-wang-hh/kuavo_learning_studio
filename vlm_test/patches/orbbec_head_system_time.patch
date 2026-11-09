@@ -1,0 +1,10 @@
+--- a/src/kuavo_data_pilot_bin/launch/start_camera.launch
++++ b/src/kuavo_data_pilot_bin/launch/start_camera.launch
+@@ -23,6 +23,7 @@
+     </include>
+     <include file="$(find orbbec_camera)/launch/gemini_330_series.launch">
+         <arg name="camera_name" value="cam_h"/>
++        <arg name="time_domain" value="system"/>
+         <arg name="enable_depth" value="true"/>
+         <arg name="color_format" value="YUYV"/>
+         <arg name="color_rotation" value="180"/>

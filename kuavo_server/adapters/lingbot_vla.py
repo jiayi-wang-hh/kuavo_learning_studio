@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sys
 from argparse import ArgumentParser, Namespace
@@ -156,6 +157,10 @@ class LingBotVlaAdapter(ModelServerAdapter):
         num_denoising_step: int,
         use_compile: bool,
         use_fp32: bool,
+        progress_monitor: bool = False,
+        progress_monitor_checkpoint: str = "",
+        progress_monitor_log: str = "",
+        progress_monitor_allow_input_mismatch: bool = False,
     ) -> None:
         if execution_horizon == 0 or execution_horizon < -1:
             raise ValueError("--execution_horizon must be -1 or a positive integer.")
@@ -197,6 +202,25 @@ class LingBotVlaAdapter(ModelServerAdapter):
             use_compile=use_compile,
         )
         self._reset_model_transform()
+        self._progress_monitor = None
+        self._progress_monitor_error = None
+        if progress_monitor:
+            try:
+                if use_compile:
+                    raise ValueError("Passive prefix capture requires use_compile=false")
+                from progress_monitor.online_monitor import PassiveProgressMonitor, DEFAULT_PROBE, DEFAULT_LOG
+                self._progress_monitor = PassiveProgressMonitor(
+                    progress_monitor_checkpoint or DEFAULT_PROBE,
+                    progress_monitor_log or DEFAULT_LOG,
+                    checkpoint=self.checkpoint,
+                    camera_order=self.model.vla.feature_transform.feature_config.images,
+                    qwen_path=self.qwen25_path,
+                    allow_input_mismatch=progress_monitor_allow_input_mismatch,
+                )
+                self.model.vla.model._progress_prefix_observer = self._progress_monitor.observe_prefix
+            except Exception as exc:
+                self._progress_monitor_error = str(exc)
+                logging.getLogger(__name__).warning("Passive monitor unavailable; normal inference preserved: %s", exc)
 
     @classmethod
     def add_cli_args(cls, parser: ArgumentParser) -> None:
@@ -226,6 +250,10 @@ class LingBotVlaAdapter(ModelServerAdapter):
         parser.add_argument("--num_denoising_step", type=int, default=10)
         parser.add_argument("--use_compile", action="store_true")
         parser.add_argument("--use_fp32", action="store_true", help="Use fp32 inference instead of bf16")
+        parser.add_argument("--progress_monitor", action="store_true", help="Enable passive Process logging (default off)")
+        parser.add_argument("--progress_monitor_checkpoint", default="", help="vision_unweighted/best.pt; default is verified full-data head")
+        parser.add_argument("--progress_monitor_log", default="", help="Append-only passive monitor JSONL log")
+        parser.add_argument("--progress_monitor_allow_input_mismatch", action="store_true", help="Explicitly allow/log existing online/offline resize or prompt differences; never changes policy inputs")
 
     @classmethod
     def from_args(cls, args: Namespace) -> "LingBotVlaAdapter":
@@ -241,6 +269,10 @@ class LingBotVlaAdapter(ModelServerAdapter):
             num_denoising_step=args.num_denoising_step,
             use_compile=args.use_compile,
             use_fp32=args.use_fp32,
+            progress_monitor=getattr(args, "progress_monitor", False),
+            progress_monitor_checkpoint=getattr(args, "progress_monitor_checkpoint", ""),
+            progress_monitor_log=getattr(args, "progress_monitor_log", ""),
+            progress_monitor_allow_input_mismatch=getattr(args, "progress_monitor_allow_input_mismatch", False),
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -255,6 +287,10 @@ class LingBotVlaAdapter(ModelServerAdapter):
             "robot_config_path": str(self.robot_config_path),
             "robot_norm_path": str(self.robot_norm_path),
             "execution_horizon": self.execution_horizon,
+            "progress_monitor": {
+                "enabled": bool(self._progress_monitor and self._progress_monitor.enabled),
+                "failure": self._progress_monitor_error or (self._progress_monitor.failure if self._progress_monitor else None),
+            },
         }
 
     def _reset_model_transform(self) -> None:
@@ -310,11 +346,92 @@ class LingBotVlaAdapter(ModelServerAdapter):
             raise ValueError(f"Unexpected action chunk ndim={chunk_np.ndim}, shape={chunk_np.shape}")
         return np.stack([self._convert_action(step) for step in chunk_np], axis=0)
 
+    # def _infer_chunk(self, obs: dict[str, Any]) -> np.ndarray:
+    #     out = self.model.infer(self._build_model_obs(obs))
+    #     if not isinstance(out, dict) or "action" not in out:
+    #         raise ValueError(f"Unexpected LingBot-VLA model output keys: {list(out) if isinstance(out, dict) else type(out)}")
+    #     return self._convert_action_chunk(out["action"])
     def _infer_chunk(self, obs: dict[str, Any]) -> np.ndarray:
-        out = self.model.infer(self._build_model_obs(obs))
+        monitor = getattr(self, "_progress_monitor", None)
+        if monitor is not None:
+            try:
+                monitor.begin(obs)
+            except Exception as exc:
+                monitor.disable(exc)
+        try:
+            out = self.model.infer(self._build_model_obs(obs))
+        finally:
+            if monitor is not None:
+                monitor.end()
+
         if not isinstance(out, dict) or "action" not in out:
-            raise ValueError(f"Unexpected LingBot-VLA model output keys: {list(out) if isinstance(out, dict) else type(out)}")
-        return self._convert_action_chunk(out["action"])
+            raise ValueError(
+                f"Unexpected LingBot-VLA model output keys: "
+                f"{list(out) if isinstance(out, dict) else type(out)}"
+            )
+
+        # 转换为机器人实际使用的动作格式
+        chunk = self._convert_action_chunk(out["action"])
+
+        # ===== DEBUG: Full Action Chunk =====
+        if chunk.ndim == 2 and chunk.shape[1] == 16:
+
+            state = np.asarray(
+                obs["observation.state"],
+                dtype=np.float64
+            ).reshape(-1)
+
+            left_arm = chunk[:, :7]
+            right_arm = chunk[:, 8:15]
+
+            print("\n========== ACTION CHUNK DEBUG ==========", flush=True)
+            print("Chunk shape:", chunk.shape, flush=True)
+
+            # 当前机器人状态
+            print("Current left arm:", state[:7], flush=True)
+            print("Current right arm:", state[8:15], flush=True)
+
+            # 预测的首帧和末帧
+            print("Pred left first:", left_arm[0], flush=True)
+            print("Pred left last :", left_arm[-1], flush=True)
+
+            # 整个 Chunk 内预测轨迹的最大变化
+            left_motion = np.max(
+                np.abs(left_arm - left_arm[0]),
+                axis=0
+            )
+
+            right_motion = np.max(
+                np.abs(right_arm - right_arm[0]),
+                axis=0
+            )
+
+            print("Left chunk motion:", left_motion, flush=True)
+            print("Right chunk motion:", right_motion, flush=True)
+
+            # 第一帧预测目标与实际观测之间的偏差
+            print(
+                "Left target-state error:",
+                left_arm[0] - state[:7],
+                flush=True
+            )
+
+            print(
+                "Right target-state error:",
+                right_arm[0] - state[8:15],
+                flush=True
+            )
+
+            print(
+                "Left gripper range:",
+                np.min(chunk[:, 7]),
+                np.max(chunk[:, 7]),
+                flush=True
+            )
+
+            print("========================================\n", flush=True)
+
+        return chunk
 
     def select_action(self, obs: dict[str, Any]) -> np.ndarray:
         if not self._pending_actions:

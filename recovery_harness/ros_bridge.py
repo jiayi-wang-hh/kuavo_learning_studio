@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from io import BytesIO
 import time
 
 from .models import CameraFrame
 from .observation import ObservationSynchronizer, ros_stamp_seconds
 
 
+def decode_compressed_rgb(data):
+    """Decode a ROS CompressedImage JPEG/PNG without the NumPy-ABI-sensitive cv_bridge."""
+    from PIL import Image
+
+    with Image.open(BytesIO(bytes(data))) as image:
+        return image.convert("RGB").copy()
+
+
 class KuavoSensorBridge:
     """Read-only ROS bridge. This class never creates a publisher or motion service client."""
     def __init__(self, config: dict, synchronizer: ObservationSynchronizer, tactile_processor):
         import rospy
-        from cv_bridge import CvBridge
         from sensor_msgs.msg import CompressedImage, JointState
         try:
             from kuavo_msgs.msg import dexhandTouchState
@@ -18,7 +26,6 @@ class KuavoSensorBridge:
             from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import dexhandTouchState
 
         self.rospy, self.synchronizer = rospy, synchronizer
-        self.bridge = CvBridge()
         self.subscribers = []
         topics = config["ros"]["topics"]
         camera_map = {
@@ -46,7 +53,7 @@ class KuavoSensorBridge:
     def _image_cb(self, name):
         def callback(msg):
             try:
-                image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="rgb8")
+                image = decode_compressed_rgb(msg.data)
                 stamp, source = ros_stamp_seconds(msg.header.stamp)
                 self.synchronizer.push_image(CameraFrame(name, image, stamp, time.monotonic(), source))
             except Exception as exc:

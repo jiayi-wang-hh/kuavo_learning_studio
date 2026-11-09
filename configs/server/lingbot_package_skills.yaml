@@ -1,0 +1,30 @@
+# Same launcher and LingBot adapter as launcher.yaml; two isolated, preloaded policies.
+# The automatic demo starts these profiles itself on unused ports.
+common:
+  host: 127.0.0.1
+  qwen25_path: /media/data/jiayi/hf_model/Qwen2.5-VL-3B-Instruct
+  robot_config_path: ""
+  which_arm: both
+  execution_horizon: 25
+  num_denoising_step: 10
+  use_compile: false
+  use_fp32: false
+  model_repo_root: ""
+
+adapters:
+  package_normal:
+    adapter: lingbot_vla
+    env: {mode: conda, conda_env: lingbotvla}
+    args:
+      port: 5557
+      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt
+      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_pacakge_lora/global_step_66480/hf_ckpt/lingbotvla_cli.yaml
+      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/kuavo_package.json
+  package_recovery:
+    adapter: lingbot_vla
+    env: {mode: conda, conda_env: lingbotvla}
+    args:
+      port: 5558
+      checkpoint: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39620/hf_ckpt
+      training_config_path: /media/data/jiayi/outputs/kuavo_lingbotvla/task3_package_lora_failure/package_below_target_zone/vlm_action_bs16_ga1_vs8/checkpoints/global_step_39620/hf_ckpt/lingbotvla_cli.yaml
+      robot_norm_path: /home/kuavo/jiayi/kuavo_learning_studio/kuavo_model/external_models/lingbot-vla/assets/norm_stats/task3_package_failure/task3_package_below_target_zone.json
